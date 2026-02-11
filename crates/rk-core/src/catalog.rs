@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::path::Path;
 use rusqlite::Connection;
 
@@ -158,8 +160,22 @@ impl Catalog {
     }
 
     fn init_schema(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;"
+        )?;
         self.conn.execute_batch(SCHEMA)?;
         Ok(())
+    }
+
+    /// Current Unix timestamp in seconds.
+    fn unix_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_secs() as i64
     }
 
     /// Record a file and its chunk list in the catalog.
@@ -241,10 +257,14 @@ impl Catalog {
                 let hash_bytes: Vec<u8> = row.get(0)?;
                 let offset: i64 = row.get(1)?;
                 let size: i64 = row.get(2)?;
+                let hash_array: [u8; 32] = hash_bytes.as_slice().try_into()
+                    .map_err(|_| rusqlite::Error::InvalidColumnType(
+                        0,
+                        "chunk_hash".into(),
+                        rusqlite::types::Type::Blob,
+                    ))?;
                 Ok(crate::chunker::ChunkMeta {
-                    hash: blake3::Hash::from_bytes(
-                        hash_bytes.as_slice().try_into().expect("invalid hash length"),
-                    ),
+                    hash: blake3::Hash::from_bytes(hash_array),
                     offset: offset as u64,
                     size: size as usize,
                     compressed_size: 0,
@@ -309,10 +329,7 @@ impl Catalog {
         total_chunks: Option<i64>,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = Self::unix_now();
         self.conn.execute(
             "INSERT INTO jobs (job_id, library_id, tape, job_type, grade, file_path, total_chunks, total_bytes, status, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?9)",
@@ -387,10 +404,7 @@ impl Catalog {
 
     /// Update a job's status and completed_chunks count.
     pub fn update_job_progress(&self, job_id: &str, completed_chunks: i64, status: &str) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = Self::unix_now();
         self.conn.execute(
             "UPDATE jobs SET completed_chunks = ?1, status = ?2, updated_at = ?3 WHERE job_id = ?4",
             rusqlite::params![completed_chunks, status, now, job_id],
@@ -400,10 +414,7 @@ impl Catalog {
 
     /// Cancel a job (set status to 'cancelled').
     pub fn cancel_job(&self, job_id: &str) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = Self::unix_now();
         self.conn.execute(
             "UPDATE jobs SET status = 'cancelled', updated_at = ?1 WHERE job_id = ?2",
             rusqlite::params![now, job_id],
@@ -554,5 +565,15 @@ mod tests {
 
         // Nonexistent
         assert!(catalog.get_job("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn catalog_uses_wal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path().join("test.db").as_path()).unwrap();
+        let mode: String = catalog.conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
     }
 }

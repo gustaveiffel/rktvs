@@ -2,6 +2,9 @@
 name = "rk-tar"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
+description = "Tar archive ingest and export for rk"
+repository = "https://github.com/rktvs/rk"
 
 [dependencies]
 rk-core = { path = "../rk-core" }

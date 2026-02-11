@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use prost::Message;
 
 /// Stream type tag — first byte on every QUIC bidi stream.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::net::SocketAddr;
 
 use prost::Message;
@@ -6,6 +8,10 @@ use tracing::info;
 
 use crate::frame::{self, StreamTag};
 use crate::proto;
+
+/// Maximum response size for a chunk fetch.
+/// 16 MB max chunk + protobuf overhead + safety margin.
+const MAX_CHUNK_RESPONSE: usize = 17 * 1024 * 1024;
 
 pub struct Satellite {
     connection: Connection,
@@ -71,7 +77,7 @@ impl Satellite {
         send.finish()?;
 
         // Read response — chunks can be up to 16 MB + protobuf overhead
-        let resp_data = recv.read_to_end(20 * 1024 * 1024).await?;
+        let resp_data = recv.read_to_end(MAX_CHUNK_RESPONSE).await?;
         let resp = proto::ChunkResponse::decode_length_delimited(resp_data.as_slice())?;
 
         if resp.found {

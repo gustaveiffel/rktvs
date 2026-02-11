@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -17,15 +19,24 @@ impl ChunkStore {
     }
 
     /// Store raw chunk data. Returns the BLAKE3 hash.
+    ///
+    /// Writes are atomic: data goes to a temp file first, then renamed
+    /// into place. A crash mid-write cannot produce a corrupt chunk.
     pub fn put(&self, data: &[u8]) -> Result<blake3::Hash> {
         let hash = blake3::hash(data);
         let path = self.chunk_path(&hash);
         if path.exists() {
             return Ok(hash);
         }
-        fs::create_dir_all(path.parent().unwrap())?;
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent)?;
         let compressed = zstd::encode_all(data, 3)?;
-        fs::write(&path, &compressed)?;
+
+        // Atomic write: temp file + rename
+        let tmp_path = parent.join(format!("{}.zst.tmp", hash.to_hex()));
+        fs::write(&tmp_path, &compressed)?;
+        fs::rename(&tmp_path, &path)?;
+
         Ok(hash)
     }
 
@@ -129,5 +140,32 @@ mod tests {
 
         let result = store.get(&hash);
         assert!(matches!(result, Err(crate::Error::HashMismatch { .. })));
+    }
+
+    #[test]
+    fn put_does_not_leave_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+
+        let data = b"temp file cleanup test";
+        let _hash = store.put(data).unwrap();
+
+        // Walk the chunks directory — no .tmp files should exist
+        fn check_no_tmp(dir: &std::path::Path) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    assert!(
+                        !path.extension().is_some_and(|e| e == "tmp"),
+                        "found temp file: {}",
+                        path.display()
+                    );
+                    if path.is_dir() {
+                        check_no_tmp(&path);
+                    }
+                }
+            }
+        }
+        check_no_tmp(&dir.path().join("chunks"));
     }
 }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::io::Read;
 
 use rk_core::catalog::Catalog;
@@ -33,7 +35,17 @@ pub fn ingest_tar<R: Read>(
 
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().to_string();
+        let raw_path = entry.path()?.to_string_lossy().to_string();
+
+        // Sanitize: strip leading "./" prefix
+        let path = raw_path.strip_prefix("./").unwrap_or(&raw_path).to_string();
+
+        // Reject path traversal and absolute paths
+        if path.contains("..") || path.starts_with('/') {
+            tracing::warn!(path = %raw_path, "skipping entry with unsafe path");
+            continue;
+        }
+
         let header = entry.header();
         let entry_type = header.entry_type();
 
@@ -137,5 +149,88 @@ mod tests {
             reconstructed.extend_from_slice(&store.get(&c.hash).unwrap());
         }
         assert_eq!(reconstructed, file_a);
+    }
+
+    /// Write a path directly into the tar header name field, bypassing
+    /// the validation in `Header::set_path()` which rejects `..` and
+    /// absolute paths.  This lets us craft adversarial archives for testing.
+    fn set_path_raw(header: &mut tar::Header, path: &str) {
+        let bytes = header.as_mut_bytes();
+        // The name field occupies bytes 0..100 in a tar header.
+        bytes[..100].fill(0);
+        let path_bytes = path.as_bytes();
+        bytes[..path_bytes.len()].copy_from_slice(path_bytes);
+    }
+
+    #[test]
+    fn ingest_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            set_path_raw(&mut header, "../../etc/evil.txt");
+            header.set_size(5);
+            header.set_mode(0o644);
+            header.set_mtime(1700000000);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append(&header, b"pwned" as &[u8]).unwrap();
+            builder.finish().unwrap();
+        }
+
+        let stats = ingest_tar(
+            Cursor::new(&buf),
+            &store,
+            &catalog,
+            "local",
+            "test",
+            MIN_CHUNK_SIZE,
+            AVG_CHUNK_SIZE,
+            MAX_CHUNK_SIZE,
+        )
+        .unwrap();
+
+        assert_eq!(stats.files, 0);
+        let files = catalog.list_files("local", "test", "/").unwrap();
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn ingest_rejects_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            set_path_raw(&mut header, "/etc/passwd");
+            header.set_size(4);
+            header.set_mode(0o644);
+            header.set_mtime(1700000000);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append(&header, b"root" as &[u8]).unwrap();
+            builder.finish().unwrap();
+        }
+
+        let stats = ingest_tar(
+            Cursor::new(&buf),
+            &store,
+            &catalog,
+            "local",
+            "test",
+            MIN_CHUNK_SIZE,
+            AVG_CHUNK_SIZE,
+            MAX_CHUNK_SIZE,
+        )
+        .unwrap();
+
+        assert_eq!(stats.files, 0);
     }
 }

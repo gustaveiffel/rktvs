@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::io::Write;
 
 use rk_core::catalog::Catalog;
@@ -19,7 +21,7 @@ pub fn export_tar<W: Write>(
         let mut header = tar::Header::new_gnu();
         header
             .set_path(&file.path)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         if file.entry_type == 2 {
             header.set_entry_type(tar::EntryType::Directory);

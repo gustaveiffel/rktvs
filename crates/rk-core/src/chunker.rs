@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use crate::chunk_store::ChunkStore;
 use crate::Result;
 
@@ -27,7 +29,7 @@ pub fn chunk_data(data: &[u8], min_size: u32, avg_size: u32, max_size: u32) -> V
     let chunker = FastCDC::new(data, min_size, avg_size, max_size);
     chunker
         .map(|entry| {
-            let slice = &data[entry.offset as usize..entry.offset as usize + entry.length];
+            let slice = &data[entry.offset..entry.offset + entry.length];
             ChunkMeta {
                 hash: blake3::hash(slice),
                 offset: entry.offset as u64,

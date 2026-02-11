@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::io;
 use std::path::PathBuf;
 
@@ -52,10 +54,10 @@ enum Commands {
 }
 
 fn resolve_data_dir(raw: &str) -> PathBuf {
-    if raw.starts_with("~/") {
-        if let Some(home) = dirs_next::home_dir() {
-            return home.join(&raw[2..]);
-        }
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Some(home) = dirs_next::home_dir()
+    {
+        return home.join(rest);
     }
     PathBuf::from(raw)
 }

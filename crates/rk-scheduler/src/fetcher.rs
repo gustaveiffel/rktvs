@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_transport::satellite::Satellite;
