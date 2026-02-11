@@ -1,0 +1,15 @@
+[package]
+name = "rk-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8"
+fastcdc = "3.2"
+rusqlite = { version = "0.38", features = ["bundled"] }
+zstd = "0.13"
+thiserror = "2.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.25"
