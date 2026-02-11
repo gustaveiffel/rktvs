@@ -1,0 +1,164 @@
+use std::path::Path;
+use rusqlite::Connection;
+
+use crate::Result;
+
+pub struct Catalog {
+    conn: Connection,
+}
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS libraries (
+    library_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    wg_pubkey BLOB NOT NULL,
+    status TEXT DEFAULT 'offline',
+    last_seen INTEGER,
+    last_catalog_version INTEGER DEFAULT 0,
+    trust_level TEXT DEFAULT 'full'
+);
+
+CREATE TABLE IF NOT EXISTS tapes (
+    library_id TEXT NOT NULL,
+    tape_name TEXT NOT NULL,
+    description TEXT,
+    owner TEXT,
+    permission TEXT NOT NULL,
+    catalog_version INTEGER DEFAULT 0,
+    merkle_root BLOB,
+    last_sync INTEGER,
+    total_files INTEGER DEFAULT 0,
+    total_size INTEGER DEFAULT 0,
+    PRIMARY KEY (library_id, tape_name)
+);
+
+CREATE TABLE IF NOT EXISTS files (
+    library_id TEXT NOT NULL,
+    tape TEXT NOT NULL,
+    path TEXT NOT NULL,
+    entry_type INTEGER NOT NULL,
+    size INTEGER,
+    mtime INTEGER,
+    mode INTEGER,
+    merkle_root BLOB,
+    version INTEGER NOT NULL,
+    deleted_at INTEGER,
+    PRIMARY KEY (library_id, tape, path)
+);
+
+CREATE TABLE IF NOT EXISTS file_chunks (
+    library_id TEXT NOT NULL,
+    tape TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_hash BLOB NOT NULL,
+    offset INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    PRIMARY KEY (library_id, tape, file_path, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    hash BLOB PRIMARY KEY,
+    size INTEGER NOT NULL,
+    compressed_size INTEGER NOT NULL,
+    ref_count INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS local_chunks (
+    chunk_hash BLOB PRIMARY KEY,
+    size INTEGER NOT NULL,
+    compressed_size INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    last_access INTEGER NOT NULL,
+    source_library TEXT,
+    ref_count INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id TEXT PRIMARY KEY,
+    library_id TEXT NOT NULL,
+    tape TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    grade INTEGER NOT NULL,
+    file_path TEXT,
+    total_chunks INTEGER,
+    completed_chunks INTEGER DEFAULT 0,
+    total_bytes INTEGER,
+    status TEXT DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tape_versions (
+    library_id TEXT NOT NULL,
+    tape TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    merkle_root BLOB NOT NULL,
+    change_count INTEGER NOT NULL,
+    PRIMARY KEY (library_id, tape, version)
+);
+
+CREATE TABLE IF NOT EXISTS tape_acl (
+    tape TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    granted_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    PRIMARY KEY (tape, node_id)
+);
+"#;
+
+impl Catalog {
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        let catalog = Self { conn };
+        catalog.init_schema()?;
+        Ok(catalog)
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let catalog = Self { conn };
+        catalog.init_schema()?;
+        Ok(catalog)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        self.conn.execute_batch(SCHEMA)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_creates_schema() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        // Verify key tables exist by querying them
+        let tables: Vec<String> = catalog
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(tables.contains(&"chunks".to_string()));
+        assert!(tables.contains(&"files".to_string()));
+        assert!(tables.contains(&"file_chunks".to_string()));
+        assert!(tables.contains(&"local_chunks".to_string()));
+        assert!(tables.contains(&"libraries".to_string()));
+        assert!(tables.contains(&"tapes".to_string()));
+        assert!(tables.contains(&"tape_versions".to_string()));
+        assert!(tables.contains(&"tape_acl".to_string()));
+        assert!(tables.contains(&"jobs".to_string()));
+    }
+}
