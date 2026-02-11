@@ -16,4 +16,4 @@ dirs-next = "2.0"
 
 [workspace]
 resolver = "2"
-members = ["crates/rk-core", "crates/rk-tar"]
+members = ["crates/rk-core", "crates/rk-tar", "crates/rk-transport"]

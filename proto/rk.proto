@@ -1,0 +1,22 @@
+syntax = "proto3";
+package rk;
+
+message Handshake {
+  string satellite_id = 1;
+  uint32 protocol_version = 2;
+}
+
+message HandshakeAck {
+  bool ok = 1;
+  string message = 2;
+}
+
+message ChunkRequest {
+  bytes hash = 1;
+}
+
+message ChunkResponse {
+  bool found = 1;
+  bytes data = 2;
+  uint64 size = 3;
+}
