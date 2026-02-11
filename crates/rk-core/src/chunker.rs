@@ -1,3 +1,4 @@
+use crate::chunk_store::ChunkStore;
 use crate::Result;
 
 /// Metadata for a single chunk produced by the chunker.
@@ -35,6 +36,37 @@ pub fn chunk_data(data: &[u8], min_size: u32, avg_size: u32, max_size: u32) -> V
             }
         })
         .collect()
+}
+
+/// Chunk data and store all chunks. Returns metadata with compressed sizes filled in.
+pub fn ingest(
+    data: &[u8],
+    store: &ChunkStore,
+    min_size: u32,
+    avg_size: u32,
+    max_size: u32,
+) -> Result<IngestResult> {
+    let metas = chunk_data(data, min_size, avg_size, max_size);
+    let mut stored = Vec::with_capacity(metas.len());
+    let mut total_size = 0u64;
+
+    for meta in metas {
+        let start = meta.offset as usize;
+        let end = start + meta.size;
+        let slice = &data[start..end];
+        store.put(slice)?;
+        let compressed_size = store.compressed_size(&meta.hash)?;
+        stored.push(ChunkMeta {
+            compressed_size,
+            ..meta
+        });
+        total_size += meta.size as u64;
+    }
+
+    Ok(IngestResult {
+        chunks: stored,
+        total_size,
+    })
 }
 
 #[cfg(test)]
@@ -80,6 +112,28 @@ mod tests {
             let end = start + chunk.size;
             let slice = &data[start..end];
             assert_eq!(chunk.hash, blake3::hash(slice));
+        }
+    }
+
+    #[test]
+    fn ingest_stores_all_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::chunk_store::ChunkStore::new(dir.path().to_path_buf());
+
+        let data: Vec<u8> = (0..100_000_u32).map(|i| (i % 251) as u8).collect();
+        let result = ingest(&data, &store, 4_096, 8_192, 16_384).unwrap();
+
+        assert!(result.chunks.len() > 1);
+        assert_eq!(result.total_size, data.len() as u64);
+
+        // every chunk should be in the store and retrievable
+        for chunk in &result.chunks {
+            assert!(store.has(&chunk.hash));
+            let retrieved = store.get(&chunk.hash).unwrap();
+            let start = chunk.offset as usize;
+            let end = start + chunk.size;
+            assert_eq!(retrieved, &data[start..end]);
+            assert!(chunk.compressed_size > 0);
         }
     }
 }
