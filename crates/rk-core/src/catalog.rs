@@ -3,6 +3,18 @@ use rusqlite::Connection;
 
 use crate::Result;
 
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub library_id: String,
+    pub tape: String,
+    pub path: String,
+    pub entry_type: i64,
+    pub size: u64,
+    pub mtime: Option<u64>,
+    pub mode: Option<u32>,
+    pub version: u64,
+}
+
 pub struct Catalog {
     conn: Connection,
 }
@@ -138,16 +150,28 @@ impl Catalog {
         library_id: &str,
         tape: &str,
         path: &str,
+        entry_type: i64,
         size: u64,
+        mtime: Option<u64>,
+        mode: Option<u32>,
         version: u64,
         chunks: &[crate::chunker::ChunkMeta],
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT OR REPLACE INTO files (library_id, tape, path, entry_type, size, version)
-             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
-            rusqlite::params![library_id, tape, path, size as i64, version as i64],
+            "INSERT OR REPLACE INTO files (library_id, tape, path, entry_type, size, mtime, mode, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                library_id,
+                tape,
+                path,
+                entry_type,
+                size as i64,
+                mtime.map(|v| v as i64),
+                mode.map(|v| v as i64),
+                version as i64,
+            ],
         )?;
 
         for (i, chunk) in chunks.iter().enumerate() {
@@ -212,6 +236,48 @@ impl Catalog {
 
         Ok(chunks)
     }
+
+    pub fn list_files(
+        &self,
+        library_id: &str,
+        tape: &str,
+        path_prefix: &str,
+    ) -> Result<Vec<FileEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT library_id, tape, path, entry_type, size, mtime, mode, version
+             FROM files
+             WHERE library_id = ?1 AND tape = ?2 AND path LIKE ?3
+               AND deleted_at IS NULL
+             ORDER BY path",
+        )?;
+
+        let like_pattern = if path_prefix == "/" {
+            "%".to_string()
+        } else {
+            format!("{}%", path_prefix)
+        };
+
+        let files = stmt
+            .query_map(rusqlite::params![library_id, tape, like_pattern], |row| {
+                let size: i64 = row.get(4)?;
+                let mtime: Option<i64> = row.get(5)?;
+                let mode: Option<i64> = row.get(6)?;
+                let version: i64 = row.get(7)?;
+                Ok(FileEntry {
+                    library_id: row.get(0)?,
+                    tape: row.get(1)?,
+                    path: row.get(2)?,
+                    entry_type: row.get(3)?,
+                    size: size as u64,
+                    mtime: mtime.map(|v| v as u64),
+                    mode: mode.map(|v| v as u32),
+                    version: version as u64,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(files)
+    }
 }
 
 #[cfg(test)]
@@ -266,7 +332,7 @@ mod tests {
         ];
 
         catalog
-            .record_file("local", "default", "/test/file.bin", 1500, 2, &chunks)
+            .record_file("local", "default", "/test/file.bin", 1, 1500, None, None, 2, &chunks)
             .unwrap();
 
         let retrieved = catalog.get_file_chunks("local", "default", "/test/file.bin").unwrap();
@@ -277,6 +343,38 @@ mod tests {
         assert_eq!(retrieved[1].hash, hash2);
         assert_eq!(retrieved[1].offset, 1000);
         assert_eq!(retrieved[1].size, 500);
+    }
+
+    #[test]
+    fn list_files_by_prefix() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        catalog
+            .record_file("local", "docs", "/readme.txt", 1, 100, Some(1700000000), Some(0o644), 1, &[])
+            .unwrap();
+        catalog
+            .record_file("local", "docs", "/src/main.rs", 1, 200, Some(1700000000), Some(0o644), 1, &[])
+            .unwrap();
+        catalog
+            .record_file("local", "docs", "/src/lib.rs", 1, 150, Some(1700000000), Some(0o644), 1, &[])
+            .unwrap();
+        catalog
+            .record_file("local", "other", "/data.bin", 1, 500, None, None, 1, &[])
+            .unwrap();
+
+        let all = catalog.list_files("local", "docs", "/").unwrap();
+        assert_eq!(all.len(), 3);
+
+        let src = catalog.list_files("local", "docs", "/src/").unwrap();
+        assert_eq!(src.len(), 2);
+
+        let other = catalog.list_files("local", "other", "/").unwrap();
+        assert_eq!(other.len(), 1);
+
+        let readme = &all.iter().find(|f| f.path == "/readme.txt").unwrap();
+        assert_eq!(readme.size, 100);
+        assert_eq!(readme.mtime, Some(1700000000));
+        assert_eq!(readme.mode, Some(0o644));
     }
 
     #[test]
