@@ -1,0 +1,15 @@
+[package]
+name = "rk-scheduler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rk-core = { path = "../rk-core" }
+rk-transport = { path = "../rk-transport" }
+blake3 = "1.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+anyhow = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.25"

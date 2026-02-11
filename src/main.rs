@@ -38,6 +38,17 @@ enum Commands {
         /// Path in format <tape>/ or <tape>/<prefix>
         path: String,
     },
+    /// Estimate transfer cost for a file (no data transfer)
+    Estimate {
+        /// Path in format <tape>/<path>
+        path: String,
+    },
+    /// List transfer jobs
+    Jobs {
+        /// Filter by status (pending, running, completed, cancelled)
+        #[arg(long)]
+        status: Option<String>,
+    },
 }
 
 fn resolve_data_dir(raw: &str) -> PathBuf {
@@ -110,6 +121,40 @@ fn main() -> Result<()> {
                 let kind = if f.entry_type == 2 { "d" } else { "-" };
                 let mode = f.mode.unwrap_or(0);
                 println!("{}{:03o}  {:>10}  {}", kind, mode, f.size, f.path);
+            }
+        }
+        Commands::Estimate { path } => {
+            let (tape, file_path) = parse_tape_path(&path)?;
+            let est = rk_scheduler::estimate::estimate_file(
+                &catalog, &store, "local", tape, file_path,
+            )?;
+            eprintln!("File: {}", path);
+            eprintln!("  Total chunks:   {}", est.total_chunks);
+            eprintln!("  Local chunks:   {}", est.local_chunks);
+            eprintln!("  Missing chunks: {}", est.missing_chunks);
+            eprintln!("  Total size:     {} bytes", est.total_bytes);
+            eprintln!("  Transfer est:   {} bytes", est.transfer_bytes);
+        }
+        Commands::Jobs { status } => {
+            let jobs = catalog.list_jobs(status.as_deref())?;
+            if jobs.is_empty() {
+                eprintln!("no jobs");
+            } else {
+                for j in &jobs {
+                    let progress = match j.total_chunks {
+                        Some(total) if total > 0 => format!("{}/{}", j.completed_chunks, total),
+                        _ => format!("{}", j.completed_chunks),
+                    };
+                    println!(
+                        "{} {} {} {} [{}] {}",
+                        j.job_id, j.status, j.job_type,
+                        j.file_path.as_deref().unwrap_or("-"),
+                        progress,
+                        rk_scheduler::types::Grade::from_i32(j.grade)
+                            .map(|g| g.as_str())
+                            .unwrap_or("?"),
+                    );
+                }
             }
         }
     }

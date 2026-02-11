@@ -15,6 +15,24 @@ pub struct FileEntry {
     pub version: u64,
 }
 
+/// Job record from the jobs table.
+#[derive(Debug, Clone)]
+pub struct JobRecord {
+    pub job_id: String,
+    pub library_id: String,
+    pub tape: String,
+    pub job_type: String,
+    pub grade: i32,
+    pub file_path: Option<String>,
+    pub total_chunks: Option<i64>,
+    pub completed_chunks: i64,
+    pub total_bytes: Option<i64>,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub error: Option<String>,
+}
+
 pub struct Catalog {
     conn: Connection,
 }
@@ -278,6 +296,120 @@ impl Catalog {
 
         Ok(files)
     }
+
+    /// Create a new job.
+    pub fn create_job(
+        &self,
+        job_id: &str,
+        library_id: &str,
+        tape: &str,
+        job_type: &str,
+        grade: i32,
+        file_path: Option<&str>,
+        total_chunks: Option<i64>,
+        total_bytes: Option<i64>,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        self.conn.execute(
+            "INSERT INTO jobs (job_id, library_id, tape, job_type, grade, file_path, total_chunks, total_bytes, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?9)",
+            rusqlite::params![job_id, library_id, tape, job_type, grade, file_path, total_chunks, total_bytes, now],
+        )?;
+        Ok(())
+    }
+
+    /// Get a job by ID.
+    pub fn get_job(&self, job_id: &str) -> Result<Option<JobRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT job_id, library_id, tape, job_type, grade, file_path, total_chunks,
+                    completed_chunks, total_bytes, status, created_at, updated_at, error
+             FROM jobs WHERE job_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![job_id], |row| {
+            Ok(JobRecord {
+                job_id: row.get(0)?,
+                library_id: row.get(1)?,
+                tape: row.get(2)?,
+                job_type: row.get(3)?,
+                grade: row.get(4)?,
+                file_path: row.get(5)?,
+                total_chunks: row.get(6)?,
+                completed_chunks: row.get(7)?,
+                total_bytes: row.get(8)?,
+                status: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+                error: row.get(12)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(job)) => Ok(Some(job)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// List jobs, optionally filtered by status.
+    pub fn list_jobs(&self, status_filter: Option<&str>) -> Result<Vec<JobRecord>> {
+        fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
+            Ok(JobRecord {
+                job_id: row.get(0)?, library_id: row.get(1)?, tape: row.get(2)?,
+                job_type: row.get(3)?, grade: row.get(4)?, file_path: row.get(5)?,
+                total_chunks: row.get(6)?, completed_chunks: row.get(7)?,
+                total_bytes: row.get(8)?, status: row.get(9)?,
+                created_at: row.get(10)?, updated_at: row.get(11)?, error: row.get(12)?,
+            })
+        }
+
+        if let Some(status) = status_filter {
+            let mut stmt = self.conn.prepare(
+                "SELECT job_id, library_id, tape, job_type, grade, file_path, total_chunks,
+                        completed_chunks, total_bytes, status, created_at, updated_at, error
+                 FROM jobs WHERE status = ?1 ORDER BY grade, created_at",
+            )?;
+            let jobs = stmt.query_map(rusqlite::params![status], row_to_job)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(jobs)
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT job_id, library_id, tape, job_type, grade, file_path, total_chunks,
+                        completed_chunks, total_bytes, status, created_at, updated_at, error
+                 FROM jobs ORDER BY grade, created_at",
+            )?;
+            let jobs = stmt.query_map([], row_to_job)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(jobs)
+        }
+    }
+
+    /// Update a job's status and completed_chunks count.
+    pub fn update_job_progress(&self, job_id: &str, completed_chunks: i64, status: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        self.conn.execute(
+            "UPDATE jobs SET completed_chunks = ?1, status = ?2, updated_at = ?3 WHERE job_id = ?4",
+            rusqlite::params![completed_chunks, status, now, job_id],
+        )?;
+        Ok(())
+    }
+
+    /// Cancel a job (set status to 'cancelled').
+    pub fn cancel_job(&self, job_id: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        self.conn.execute(
+            "UPDATE jobs SET status = 'cancelled', updated_at = ?1 WHERE job_id = ?2",
+            rusqlite::params![now, job_id],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -384,5 +516,43 @@ mod tests {
             .get_file_chunks("local", "default", "/no/such/file")
             .unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn job_crud() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        catalog.create_job("job-1", "lib-a", "tape-1", "fetch", 1, Some("/file.bin"), Some(10), Some(1000)).unwrap();
+        catalog.create_job("job-2", "lib-a", "tape-1", "fetch", 0, Some("/urgent.bin"), Some(5), Some(500)).unwrap();
+
+        let job = catalog.get_job("job-1").unwrap().unwrap();
+        assert_eq!(job.job_id, "job-1");
+        assert_eq!(job.grade, 1);
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.completed_chunks, 0);
+
+        // Update progress
+        catalog.update_job_progress("job-1", 5, "running").unwrap();
+        let job = catalog.get_job("job-1").unwrap().unwrap();
+        assert_eq!(job.completed_chunks, 5);
+        assert_eq!(job.status, "running");
+
+        // List by status
+        let pending = catalog.list_jobs(Some("pending")).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].job_id, "job-2");
+
+        // List all — sorted by grade then created_at
+        let all = catalog.list_jobs(None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].job_id, "job-2"); // grade 0 first
+
+        // Cancel
+        catalog.cancel_job("job-2").unwrap();
+        let job = catalog.get_job("job-2").unwrap().unwrap();
+        assert_eq!(job.status, "cancelled");
+
+        // Nonexistent
+        assert!(catalog.get_job("nope").unwrap().is_none());
     }
 }

@@ -919,6 +919,7 @@ dependencies = [
  "clap",
  "dirs-next",
  "rk-core",
+ "rk-scheduler",
  "rk-tar",
 ]
 
@@ -933,6 +934,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zstd",
+]
+
+[[package]]
+name = "rk-scheduler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "rk-core",
+ "rk-transport",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
