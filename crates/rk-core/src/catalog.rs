@@ -131,6 +131,87 @@ impl Catalog {
         self.conn.execute_batch(SCHEMA)?;
         Ok(())
     }
+
+    /// Record a file and its chunk list in the catalog.
+    pub fn record_file(
+        &self,
+        library_id: &str,
+        tape: &str,
+        path: &str,
+        size: u64,
+        version: u64,
+        chunks: &[crate::chunker::ChunkMeta],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO files (library_id, tape, path, entry_type, size, version)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            rusqlite::params![library_id, tape, path, size as i64, version as i64],
+        )?;
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT OR REPLACE INTO file_chunks
+                 (library_id, tape, file_path, chunk_index, chunk_hash, offset, size)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    library_id,
+                    tape,
+                    path,
+                    i as i64,
+                    chunk.hash.as_bytes().as_slice(),
+                    chunk.offset as i64,
+                    chunk.size as i64,
+                ],
+            )?;
+
+            tx.execute(
+                "INSERT OR IGNORE INTO chunks (hash, size, compressed_size)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    chunk.hash.as_bytes().as_slice(),
+                    chunk.size as i64,
+                    chunk.compressed_size as i64,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Get the ordered list of chunks for a file.
+    pub fn get_file_chunks(
+        &self,
+        library_id: &str,
+        tape: &str,
+        path: &str,
+    ) -> Result<Vec<crate::chunker::ChunkMeta>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chunk_hash, offset, size FROM file_chunks
+             WHERE library_id = ?1 AND tape = ?2 AND file_path = ?3
+             ORDER BY chunk_index",
+        )?;
+
+        let chunks = stmt
+            .query_map(rusqlite::params![library_id, tape, path], |row| {
+                let hash_bytes: Vec<u8> = row.get(0)?;
+                let offset: i64 = row.get(1)?;
+                let size: i64 = row.get(2)?;
+                Ok(crate::chunker::ChunkMeta {
+                    hash: blake3::Hash::from_bytes(
+                        hash_bytes.as_slice().try_into().expect("invalid hash length"),
+                    ),
+                    offset: offset as u64,
+                    size: size as usize,
+                    compressed_size: 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(chunks)
+    }
 }
 
 #[cfg(test)]
@@ -160,5 +241,50 @@ mod tests {
         assert!(tables.contains(&"tape_versions".to_string()));
         assert!(tables.contains(&"tape_acl".to_string()));
         assert!(tables.contains(&"jobs".to_string()));
+    }
+
+    #[test]
+    fn record_and_query_file_chunks() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        let hash1 = blake3::hash(b"chunk1");
+        let hash2 = blake3::hash(b"chunk2");
+
+        let chunks = vec![
+            crate::chunker::ChunkMeta {
+                hash: hash1,
+                offset: 0,
+                size: 1000,
+                compressed_size: 800,
+            },
+            crate::chunker::ChunkMeta {
+                hash: hash2,
+                offset: 1000,
+                size: 500,
+                compressed_size: 400,
+            },
+        ];
+
+        catalog
+            .record_file("local", "default", "/test/file.bin", 1500, 2, &chunks)
+            .unwrap();
+
+        let retrieved = catalog.get_file_chunks("local", "default", "/test/file.bin").unwrap();
+        assert_eq!(retrieved.len(), 2);
+        assert_eq!(retrieved[0].hash, hash1);
+        assert_eq!(retrieved[0].offset, 0);
+        assert_eq!(retrieved[0].size, 1000);
+        assert_eq!(retrieved[1].hash, hash2);
+        assert_eq!(retrieved[1].offset, 1000);
+        assert_eq!(retrieved[1].size, 500);
+    }
+
+    #[test]
+    fn query_nonexistent_file_returns_empty() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        let result = catalog
+            .get_file_chunks("local", "default", "/no/such/file")
+            .unwrap();
+        assert!(result.is_empty());
     }
 }
