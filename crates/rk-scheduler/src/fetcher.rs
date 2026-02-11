@@ -2,6 +2,7 @@
 
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
+use rk_core::resolver::ChunkResolver;
 use rk_transport::satellite::Satellite;
 use tracing::info;
 
@@ -16,10 +17,13 @@ pub struct FetchResult {
 
 /// Fetch all missing chunks for a file from the hub.
 ///
-/// Chunks already present in the local store are skipped (resume support).
+/// Chunks already present locally (in the resolver — manifest or store)
+/// are skipped (resume support). Fetched chunks are written to the store.
 /// Updates job progress in the catalog after each chunk.
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_file(
     satellite: &Satellite,
+    resolver: &ChunkResolver<'_>,
     store: &ChunkStore,
     catalog: &Catalog,
     library_id: &str,
@@ -34,7 +38,7 @@ pub async fn fetch_file(
     let mut bytes_transferred = 0u64;
 
     for (i, chunk) in chunks.iter().enumerate() {
-        if store.has(&chunk.hash) {
+        if resolver.has(&chunk.hash) {
             skipped_chunks += 1;
             info!(hash = %chunk.hash, "chunk already local, skipping");
         } else {

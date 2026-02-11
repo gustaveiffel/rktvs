@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_core::chunker;
+use rk_core::resolver::ChunkResolver;
 use rk_transport::{cert, hub::Hub, satellite::Satellite};
 use rk_scheduler::fetcher;
 
@@ -42,7 +43,7 @@ async fn fetch_file_with_resume() {
     let server_config = cert::server_config(cert.clone(), key).unwrap();
     let client_config = cert::client_config(&cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, hub_store)
+    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, hub_store, None)
         .await
         .unwrap();
     let hub_addr = hub.local_addr();
@@ -53,8 +54,9 @@ async fn fetch_file_with_resume() {
         .unwrap();
 
     // --- Fetch with resume ---
+    let resolver = ChunkResolver::new(None, &sat_store);
     let fetch_result = fetcher::fetch_file(
-        &satellite, &sat_store, &sat_catalog,
+        &satellite, &resolver, &sat_store, &sat_catalog,
         "lib-a", "tape-1", "/bigfile.bin",
         Some("job-resume"),
     ).await.unwrap();

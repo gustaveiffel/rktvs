@@ -15,7 +15,7 @@ async fn fetch_chunk_over_localhost() {
     let server_config = cert::server_config(cert.clone(), key).unwrap();
     let client_config = cert::client_config(&cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store)
+    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None)
         .await
         .unwrap();
     let hub_addr = hub.local_addr();

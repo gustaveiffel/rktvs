@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use rk_core::catalog::Catalog;
-use rk_core::chunk_store::ChunkStore;
+use rk_core::resolver::ChunkResolver;
 
 /// Result of estimating a file transfer.
 #[derive(Debug, Clone)]
@@ -16,7 +16,7 @@ pub struct Estimate {
 /// Estimate the cost of fetching a file without transferring anything.
 pub fn estimate_file(
     catalog: &Catalog,
-    store: &ChunkStore,
+    resolver: &ChunkResolver,
     library_id: &str,
     tape: &str,
     path: &str,
@@ -31,7 +31,7 @@ pub fn estimate_file(
 
     for chunk in &chunks {
         total_bytes += chunk.size as u64;
-        if store.has(&chunk.hash) {
+        if resolver.has(&chunk.hash) {
             local_chunks += 1;
         } else {
             missing_chunks += 1;
@@ -51,6 +51,7 @@ pub fn estimate_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rk_core::chunk_store::ChunkStore;
     use rk_core::chunker;
 
     #[test]
@@ -63,7 +64,8 @@ mod tests {
         let result = chunker::ingest(&data, &store, 4_096, 8_192, 16_384).unwrap();
         catalog.record_file("lib-a", "tape-1", "/test.bin", 1, data.len() as u64, None, None, 1, &result.chunks).unwrap();
 
-        let est = estimate_file(&catalog, &store, "lib-a", "tape-1", "/test.bin").unwrap();
+        let resolver = ChunkResolver::new(None, &store);
+        let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/test.bin").unwrap();
         assert_eq!(est.total_chunks, result.chunks.len());
         assert_eq!(est.local_chunks, result.chunks.len());
         assert_eq!(est.missing_chunks, 0);
@@ -82,7 +84,8 @@ mod tests {
         let result = chunker::ingest(&data, &store_ingest, 4_096, 8_192, 16_384).unwrap();
         catalog.record_file("lib-a", "tape-1", "/remote.bin", 1, data.len() as u64, None, None, 1, &result.chunks).unwrap();
 
-        let est = estimate_file(&catalog, &store_local, "lib-a", "tape-1", "/remote.bin").unwrap();
+        let resolver = ChunkResolver::new(None, &store_local);
+        let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/remote.bin").unwrap();
         assert_eq!(est.total_chunks, result.chunks.len());
         assert_eq!(est.local_chunks, 0);
         assert_eq!(est.missing_chunks, result.chunks.len());

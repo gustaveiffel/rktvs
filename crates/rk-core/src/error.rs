@@ -18,6 +18,24 @@ pub enum Error {
         expected: blake3::Hash,
         actual: blake3::Hash,
     },
+
+    #[error("manifest format error: {0}")]
+    ManifestFormat(String),
+
+    #[error("stale source file: {path} (expected mtime={expected_mtime} size={expected_size}, got mtime={actual_mtime} size={actual_size})")]
+    StaleSourceFile {
+        path: String,
+        expected_mtime: u64,
+        expected_size: u64,
+        actual_mtime: u64,
+        actual_size: u64,
+    },
+
+    #[error("source file not found: {0}")]
+    SourceFileNotFound(String),
+
+    #[error("chunk not available: {0}")]
+    ChunkNotAvailable(blake3::Hash),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

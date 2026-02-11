@@ -13,6 +13,10 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 zstd = "0.13"
 thiserror = "2.0"
 tracing = "0.1"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3.25"
+rk-tar = { path = "../rk-tar" }
+rk-scheduler = { path = "../rk-scheduler" }
+tar = "0.4"

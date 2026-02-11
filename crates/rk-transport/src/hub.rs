@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use quinn::{Endpoint, RecvStream, SendStream};
 use rk_core::chunk_store::ChunkStore;
+use rk_core::manifest::Manifest;
+use rk_core::resolver::ChunkResolver;
 use prost::Message;
 use tracing::{info, warn};
 
@@ -14,6 +16,7 @@ use crate::proto;
 pub struct Hub {
     endpoint: Endpoint,
     store: Arc<ChunkStore>,
+    manifest: Option<Arc<Manifest>>,
 }
 
 impl Hub {
@@ -22,9 +25,10 @@ impl Hub {
         addr: SocketAddr,
         server_config: quinn::ServerConfig,
         store: Arc<ChunkStore>,
+        manifest: Option<Arc<Manifest>>,
     ) -> std::io::Result<Self> {
         let endpoint = Endpoint::server(server_config, addr)?;
-        Ok(Self { endpoint, store })
+        Ok(Self { endpoint, store, manifest })
     }
 
     /// Return the local address the hub is listening on.
@@ -36,11 +40,12 @@ impl Hub {
     pub async fn run(&self) {
         while let Some(incoming) = self.endpoint.accept().await {
             let store = self.store.clone();
+            let manifest = self.manifest.clone();
             tokio::spawn(async move {
                 match incoming.await {
                     Ok(conn) => {
                         info!(remote = %conn.remote_address(), "connection accepted");
-                        if let Err(e) = handle_connection(conn, store).await {
+                        if let Err(e) = handle_connection(conn, store, manifest).await {
                             warn!("connection error: {e}");
                         }
                     }
@@ -51,12 +56,17 @@ impl Hub {
     }
 }
 
-async fn handle_connection(conn: quinn::Connection, store: Arc<ChunkStore>) -> anyhow::Result<()> {
+async fn handle_connection(
+    conn: quinn::Connection,
+    store: Arc<ChunkStore>,
+    manifest: Option<Arc<Manifest>>,
+) -> anyhow::Result<()> {
     loop {
         let (send, recv) = conn.accept_bi().await?;
         let store = store.clone();
+        let manifest = manifest.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(send, recv, store).await {
+            if let Err(e) = handle_stream(send, recv, store, manifest).await {
                 warn!("stream error: {e}");
             }
         });
@@ -67,6 +77,7 @@ async fn handle_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     store: Arc<ChunkStore>,
+    manifest: Option<Arc<Manifest>>,
 ) -> anyhow::Result<()> {
     // Read the 1-byte stream tag
     let mut tag_buf = [0u8; 1];
@@ -76,7 +87,9 @@ async fn handle_stream(
 
     match tag {
         StreamTag::Control => handle_control(&mut send, &mut recv).await?,
-        StreamTag::ChunkRequest => handle_chunk_request(&mut send, &mut recv, &store).await?,
+        StreamTag::ChunkRequest => {
+            handle_chunk_request(&mut send, &mut recv, &store, manifest.as_deref()).await?;
+        }
     }
 
     Ok(())
@@ -101,6 +114,7 @@ async fn handle_chunk_request(
     send: &mut SendStream,
     recv: &mut RecvStream,
     store: &ChunkStore,
+    manifest: Option<&Manifest>,
 ) -> anyhow::Result<()> {
     let data = recv.read_to_end(4096).await?;
     let req = proto::ChunkRequest::decode_length_delimited(data.as_slice())?;
@@ -110,7 +124,8 @@ async fn handle_chunk_request(
         .map_err(|_| anyhow::anyhow!("invalid hash length: {}", req.hash.len()))?;
     let hash = blake3::Hash::from_bytes(hash_bytes);
 
-    let resp = match store.get(&hash) {
+    let resolver = ChunkResolver::new(manifest, store);
+    let resp = match resolver.get(&hash) {
         Ok(chunk_data) => proto::ChunkResponse {
             found: true,
             size: chunk_data.len() as u64,
@@ -141,7 +156,7 @@ mod tests {
         let (cert, key) = crate::cert::generate_self_signed().unwrap();
         let server_config = crate::cert::server_config(cert, key).unwrap();
 
-        let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store).await.unwrap();
+        let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None).await.unwrap();
         let addr = hub.local_addr();
         assert_ne!(addr.port(), 0);
     }

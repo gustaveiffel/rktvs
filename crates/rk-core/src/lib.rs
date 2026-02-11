@@ -4,5 +4,9 @@ pub mod catalog;
 pub mod chunk_store;
 pub mod chunker;
 pub mod error;
+pub mod indexer;
+pub mod manifest;
+pub mod resolver;
+pub mod verifier;
 
 pub use error::{Error, Result};

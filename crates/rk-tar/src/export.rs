@@ -3,12 +3,12 @@
 use std::io::Write;
 
 use rk_core::catalog::Catalog;
-use rk_core::chunk_store::ChunkStore;
+use rk_core::resolver::ChunkResolver;
 
-/// Export files from the catalog and chunk store as a tar archive.
+/// Export files from the catalog and chunk resolver as a tar archive.
 pub fn export_tar<W: Write>(
     writer: W,
-    store: &ChunkStore,
+    resolver: &ChunkResolver,
     catalog: &Catalog,
     library_id: &str,
     tape: &str,
@@ -43,7 +43,7 @@ pub fn export_tar<W: Write>(
             let chunks = catalog.get_file_chunks(&file.library_id, &file.tape, &file.path)?;
             let mut data = Vec::with_capacity(file.size as usize);
             for chunk_meta in &chunks {
-                let chunk_data = store.get(&chunk_meta.hash)?;
+                let chunk_data = resolver.get(&chunk_meta.hash)?;
                 data.extend_from_slice(&chunk_data);
             }
             builder.append(&header, data.as_slice())?;
@@ -60,6 +60,7 @@ pub fn export_tar<W: Write>(
 mod tests {
     use super::*;
     use crate::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
+    use rk_core::chunk_store::ChunkStore;
     use std::io::Cursor;
     use std::io::Read;
 
@@ -111,7 +112,8 @@ mod tests {
 
         // Export
         let mut exported = Vec::new();
-        export_tar(&mut exported, &store, &catalog, "local", "mytest", "/").unwrap();
+        let resolver = ChunkResolver::new(None, &store);
+        export_tar(&mut exported, &resolver, &catalog, "local", "mytest", "/").unwrap();
 
         // Parse exported tar and verify contents
         let mut archive = tar::Archive::new(Cursor::new(&exported));

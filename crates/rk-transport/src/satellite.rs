@@ -102,7 +102,7 @@ mod tests {
         let server_config = crate::cert::server_config(cert.clone(), key).unwrap();
         let client_config = crate::cert::client_config(&cert).unwrap();
 
-        let hub = crate::hub::Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store)
+        let hub = crate::hub::Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None)
             .await
             .unwrap();
         let hub_addr = hub.local_addr();

@@ -8,6 +8,10 @@ use clap::{Parser, Subcommand};
 
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
+use rk_core::indexer::IndexConfig;
+use rk_core::manifest::Manifest;
+use rk_core::resolver::ChunkResolver;
+use rk_core::verifier;
 use rk_tar::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
 use rk_tar::export;
 
@@ -51,6 +55,23 @@ enum Commands {
         #[arg(long)]
         status: Option<String>,
     },
+    /// Index files in-place (zero-copy by-reference chunking)
+    Index {
+        /// Tape name to index into
+        #[arg(long, default_value = "default")]
+        tape: String,
+        /// Directory path to index
+        path: String,
+    },
+    /// Verify integrity of indexed files
+    Verify {
+        /// Tape to verify (verifies all if omitted)
+        #[arg(long)]
+        tape: Option<String>,
+        /// Full BLAKE3 hash verification (slower)
+        #[arg(long)]
+        blake3: bool,
+    },
 }
 
 fn resolve_data_dir(raw: &str) -> PathBuf {
@@ -89,6 +110,14 @@ fn main() -> Result<()> {
     let catalog = Catalog::open(data_dir.join("catalog.db").as_path())
         .context("opening catalog")?;
 
+    // Load manifest if it exists
+    let manifest_path = data_dir.join("manifest.rkm");
+    let mut manifest = if manifest_path.exists() {
+        Some(Manifest::read_from_file(&manifest_path).context("reading manifest")?)
+    } else {
+        None
+    };
+
     match cli.command {
         Commands::Ingest { tape } => {
             let stdin = io::stdin();
@@ -109,9 +138,10 @@ fn main() -> Result<()> {
             );
         }
         Commands::Tar { path } => {
+            let resolver = ChunkResolver::new(manifest.as_ref(), &store);
             let (tape, prefix) = parse_tape_path(&path)?;
             let stdout = io::stdout();
-            export::export_tar(stdout.lock(), &store, &catalog, "local", tape, prefix)
+            export::export_tar(stdout.lock(), &resolver, &catalog, "local", tape, prefix)
                 .context("exporting tar")?;
         }
         Commands::Ls { path } => {
@@ -126,9 +156,10 @@ fn main() -> Result<()> {
             }
         }
         Commands::Estimate { path } => {
+            let resolver = ChunkResolver::new(manifest.as_ref(), &store);
             let (tape, file_path) = parse_tape_path(&path)?;
             let est = rk_scheduler::estimate::estimate_file(
-                &catalog, &store, "local", tape, file_path,
+                &catalog, &resolver, "local", tape, file_path,
             )?;
             eprintln!("File: {}", path);
             eprintln!("  Total chunks:   {}", est.total_chunks);
@@ -157,6 +188,42 @@ fn main() -> Result<()> {
                             .unwrap_or("?"),
                     );
                 }
+            }
+        }
+        Commands::Index { tape, path } => {
+            let dir = PathBuf::from(&path);
+            if !dir.is_dir() {
+                bail!("not a directory: {}", path);
+            }
+            let mut m = manifest.take().unwrap_or_default();
+            let config = IndexConfig::default();
+            let stats = rk_core::indexer::index_directory(
+                &dir, &mut m, &catalog, "local", &tape, &config,
+            )
+            .context("indexing directory")?;
+            m.write_to_file(&manifest_path).context("writing manifest")?;
+            eprintln!(
+                "indexed {} files, {} dirs, {} chunks ({} new, {} dedup), {} bytes",
+                stats.files_indexed, stats.dirs_found,
+                stats.chunks_total, stats.chunks_new, stats.chunks_dedup,
+                stats.total_bytes
+            );
+        }
+        Commands::Verify { tape: _, blake3 } => {
+            let m = manifest.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("no manifest found at {}", manifest_path.display())
+            })?;
+            let result = verifier::verify_manifest(m, blake3);
+            eprintln!("Checked:   {}", result.chunks_checked);
+            eprintln!("OK:        {}", result.chunks_ok);
+            eprintln!("Stale:     {}", result.chunks_stale);
+            eprintln!("Missing:   {}", result.chunks_missing);
+            eprintln!("Corrupted: {}", result.chunks_corrupted);
+            if result.chunks_stale > 0 || result.chunks_missing > 0 || result.chunks_corrupted > 0 {
+                bail!(
+                    "verification failed: {} stale, {} missing, {} corrupted",
+                    result.chunks_stale, result.chunks_missing, result.chunks_corrupted
+                );
             }
         }
     }

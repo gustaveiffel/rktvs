@@ -5,6 +5,7 @@ use std::io::Read;
 
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
+use rk_core::resolver::ChunkResolver;
 use rk_tar::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
 use rk_tar::export;
 
@@ -59,7 +60,8 @@ fn tar_roundtrip_preserves_content_and_metadata() {
 
     // Export
     let mut exported = Vec::new();
-    export::export_tar(&mut exported, &store, &catalog, "local", "roundtrip", "/").unwrap();
+    let resolver = ChunkResolver::new(None, &store);
+    export::export_tar(&mut exported, &resolver, &catalog, "local", "roundtrip", "/").unwrap();
 
     // Parse exported tar and compare with originals
     let mut archive = tar::Archive::new(Cursor::new(&exported));
