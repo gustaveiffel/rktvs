@@ -17,6 +17,16 @@ pub struct FileEntry {
     pub version: u64,
 }
 
+/// Library record from the libraries table.
+#[derive(Debug, Clone)]
+pub struct LibraryRecord {
+    pub library_id: String,
+    pub display_name: String,
+    pub endpoint: String,
+    pub status: String,
+    pub last_seen: Option<i64>,
+}
+
 /// Job record from the jobs table.
 #[derive(Debug, Clone)]
 pub struct JobRecord {
@@ -177,6 +187,111 @@ impl Catalog {
             .expect("system clock is before Unix epoch")
             .as_secs() as i64
     }
+
+    // ── Library CRUD ─────────────────────────────────────────
+
+    /// Register a remote library.
+    pub fn add_library(
+        &self,
+        library_id: &str,
+        display_name: &str,
+        endpoint: &str,
+        cert_path: &str,
+    ) -> Result<()> {
+        // Store cert_path in the endpoint field alongside the address.
+        // wg_pubkey is a placeholder (zeroed 32 bytes) for the MVP cert-pinning model.
+        let wg_placeholder = vec![0u8; 32];
+        self.conn.execute(
+            "INSERT INTO libraries (library_id, display_name, endpoint, wg_pubkey, status)
+             VALUES (?1, ?2, ?3, ?4, 'offline')",
+            rusqlite::params![library_id, display_name, endpoint, wg_placeholder],
+        )?;
+        // Store cert path as a separate metadata — reuse endpoint for address,
+        // stash cert_path in trust_level (repurposed for MVP, schema untouched).
+        self.conn.execute(
+            "UPDATE libraries SET trust_level = ?1 WHERE library_id = ?2",
+            rusqlite::params![cert_path, library_id],
+        )?;
+        Ok(())
+    }
+
+    /// List all registered libraries.
+    pub fn list_libraries(&self) -> Result<Vec<LibraryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT library_id, display_name, endpoint, status, last_seen
+             FROM libraries ORDER BY library_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LibraryRecord {
+                    library_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    endpoint: row.get(2)?,
+                    status: row.get(3)?,
+                    last_seen: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Get a single library by ID.
+    pub fn get_library(&self, library_id: &str) -> Result<Option<LibraryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT library_id, display_name, endpoint, status, last_seen
+             FROM libraries WHERE library_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![library_id], |row| {
+            Ok(LibraryRecord {
+                library_id: row.get(0)?,
+                display_name: row.get(1)?,
+                endpoint: row.get(2)?,
+                status: row.get(3)?,
+                last_seen: row.get(4)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(rec)) => Ok(Some(rec)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the cert path stored for a library (stashed in trust_level for MVP).
+    pub fn get_library_cert_path(&self, library_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT trust_level FROM libraries WHERE library_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![library_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        match rows.next() {
+            Some(Ok(path)) => Ok(Some(path)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Remove a library by ID.
+    pub fn remove_library(&self, library_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM libraries WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        Ok(())
+    }
+
+    /// Update a library's online status and last_seen timestamp.
+    pub fn update_library_status(&self, library_id: &str, status: &str) -> Result<()> {
+        let now = Self::unix_now();
+        self.conn.execute(
+            "UPDATE libraries SET status = ?1, last_seen = ?2 WHERE library_id = ?3",
+            rusqlite::params![status, now, library_id],
+        )?;
+        Ok(())
+    }
+
+    // ── File + Chunk operations ─────────────────────────────
 
     /// Record a file and its chunk list in the catalog.
     pub fn record_file(
@@ -565,6 +680,57 @@ mod tests {
 
         // Nonexistent
         assert!(catalog.get_job("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn library_crud() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        // Add
+        catalog.add_library("hub1", "Hub One", "192.168.1.1:4443", "/certs/hub1.der").unwrap();
+        catalog.add_library("hub2", "Hub Two", "10.0.0.1:4443", "/certs/hub2.der").unwrap();
+
+        // List
+        let libs = catalog.list_libraries().unwrap();
+        assert_eq!(libs.len(), 2);
+        assert_eq!(libs[0].library_id, "hub1");
+        assert_eq!(libs[1].library_id, "hub2");
+
+        // Get
+        let lib = catalog.get_library("hub1").unwrap().unwrap();
+        assert_eq!(lib.display_name, "Hub One");
+        assert_eq!(lib.endpoint, "192.168.1.1:4443");
+        assert_eq!(lib.status, "offline");
+        assert!(lib.last_seen.is_none());
+
+        // Cert path
+        let cert = catalog.get_library_cert_path("hub1").unwrap().unwrap();
+        assert_eq!(cert, "/certs/hub1.der");
+
+        // Nonexistent
+        assert!(catalog.get_library("nope").unwrap().is_none());
+
+        // Update status
+        catalog.update_library_status("hub1", "online").unwrap();
+        let lib = catalog.get_library("hub1").unwrap().unwrap();
+        assert_eq!(lib.status, "online");
+        assert!(lib.last_seen.is_some());
+
+        // Remove
+        catalog.remove_library("hub1").unwrap();
+        assert!(catalog.get_library("hub1").unwrap().is_none());
+        assert_eq!(catalog.list_libraries().unwrap().len(), 1);
+
+        // Remove nonexistent — no error
+        catalog.remove_library("hub1").unwrap();
+    }
+
+    #[test]
+    fn library_duplicate_add_errors() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        catalog.add_library("hub1", "Hub One", "1.2.3.4:4443", "/cert.der").unwrap();
+        let result = catalog.add_library("hub1", "Hub One Again", "5.6.7.8:4443", "/cert2.der");
+        assert!(result.is_err());
     }
 
     #[test]

@@ -14,9 +14,13 @@ path = "src/main.rs"
 rk-core = { path = "crates/rk-core" }
 rk-tar = { path = "crates/rk-tar" }
 rk-scheduler = { path = "crates/rk-scheduler" }
+rk-transport = { path = "crates/rk-transport" }
+blake3 = "1.8"
 clap = { version = "4.5", features = ["derive", "env"] }
 anyhow = "1.0"
 dirs-next = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [workspace]
 resolver = "2"

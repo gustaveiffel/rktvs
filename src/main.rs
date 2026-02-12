@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use std::io;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -14,6 +17,7 @@ use rk_core::resolver::ChunkResolver;
 use rk_core::verifier;
 use rk_tar::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
 use rk_tar::export;
+use rk_transport::cert;
 
 #[derive(Parser)]
 #[command(name = "rk", about = "Content-addressed file delivery over hostile networks")]
@@ -72,6 +76,66 @@ enum Commands {
         #[arg(long)]
         blake3: bool,
     },
+    /// Hub server commands
+    Hub {
+        #[command(subcommand)]
+        command: HubCommands,
+    },
+    /// Manage remote libraries
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommands,
+    },
+    /// Fetch a file from a remote library
+    Fetch {
+        /// Path in format <library>:<tape>/<path>
+        path: String,
+        /// Transfer priority grade
+        #[arg(long, default_value = "normal")]
+        grade: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum HubCommands {
+    /// Initialize a hub data directory (generates TLS cert)
+    Init {
+        /// Listen address (used for certificate SANs)
+        #[arg(long, default_value = "0.0.0.0:4443")]
+        listen: String,
+    },
+    /// Start the hub server
+    Serve {
+        /// Listen address
+        #[arg(long, default_value = "0.0.0.0:4443")]
+        listen: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum LibraryCommands {
+    /// Register a remote library
+    Add {
+        /// Library identifier
+        id: String,
+        /// Endpoint address (host:port)
+        endpoint: String,
+        /// Path to the hub's certificate (.der file)
+        #[arg(long)]
+        cert: String,
+    },
+    /// List known libraries
+    List,
+    /// Remove a library
+    Remove {
+        /// Library identifier
+        id: String,
+    },
+    /// Ping a library to check connectivity
+    Ping {
+        /// Library identifier
+        id: String,
+    },
 }
 
 fn resolve_data_dir(raw: &str) -> PathBuf {
@@ -100,7 +164,21 @@ fn parse_tape_path(input: &str) -> Result<(&str, &str)> {
     }
 }
 
-fn main() -> Result<()> {
+/// Parse "<library>:<tape>/<path>" into (library, tape, file_path).
+fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
+    let (library, rest) = input
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("expected format <library>:<tape>/<path>, got '{}'", input))?;
+    if library.is_empty() {
+        bail!("library name cannot be empty in '{}'", input);
+    }
+    let (tape, path) = parse_tape_path(rest)?;
+    Ok((library, tape, path))
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(&cli.data_dir);
     std::fs::create_dir_all(&data_dir)
@@ -225,6 +303,254 @@ fn main() -> Result<()> {
                     result.chunks_stale, result.chunks_missing, result.chunks_corrupted
                 );
             }
+        }
+
+        // ── Hub commands ────────────────────────────────────
+
+        Commands::Hub { command } => match command {
+            HubCommands::Init { listen } => {
+                let cert_path = data_dir.join("hub.cert.der");
+                let key_path = data_dir.join("hub.key.der");
+
+                if cert_path.exists() {
+                    bail!(
+                        "hub already initialized (cert exists at {}). \
+                         Remove it to re-initialize.",
+                        cert_path.display()
+                    );
+                }
+
+                // Build SANs: always include localhost + 127.0.0.1,
+                // plus the listen address host if it's not a wildcard.
+                let mut sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+                if let Some(host) = listen.split(':').next()
+                    && host != "0.0.0.0" && host != "::" && !sans.contains(&host.to_string())
+                {
+                    sans.push(host.to_string());
+                }
+
+                let (hub_cert, hub_key) = cert::generate_self_signed_for(sans)
+                    .context("generating self-signed certificate")?;
+
+                cert::save_cert(&hub_cert, &cert_path)
+                    .context("saving certificate")?;
+                cert::save_key(&hub_key, &key_path)
+                    .context("saving private key")?;
+
+                let fingerprint = blake3::hash(hub_cert.as_ref());
+                eprintln!("hub initialized");
+                eprintln!("  cert:        {}", cert_path.display());
+                eprintln!("  key:         {}", key_path.display());
+                eprintln!("  fingerprint: {}", fingerprint.to_hex());
+                eprintln!("  listen:      {}", listen);
+                eprintln!();
+                eprintln!("share {} with satellites to connect", cert_path.display());
+            }
+
+            HubCommands::Serve { listen } => {
+                let cert_path = data_dir.join("hub.cert.der");
+                let key_path = data_dir.join("hub.key.der");
+
+                if !cert_path.exists() {
+                    bail!(
+                        "no certificate found at {}. Run `rk hub init` first.",
+                        cert_path.display()
+                    );
+                }
+
+                let hub_cert = cert::load_cert(&cert_path)
+                    .context("loading certificate")?;
+                let hub_key = cert::load_key(&key_path)
+                    .context("loading private key")?;
+                let server_config = cert::server_config(hub_cert, hub_key)
+                    .context("building TLS config")?;
+
+                let addr: SocketAddr = listen.parse()
+                    .with_context(|| format!("invalid listen address: {listen}"))?;
+
+                let store = Arc::new(store);
+                let manifest = manifest.map(Arc::new);
+
+                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest)
+                    .await
+                    .context("binding hub server")?;
+
+                eprintln!("hub listening on {}", hub.local_addr());
+                hub.run().await;
+            }
+        },
+
+        // ── Library commands ────────────────────────────────
+
+        Commands::Library { command } => match command {
+            LibraryCommands::Add { id, endpoint, cert: cert_file } => {
+                let src = PathBuf::from(&cert_file);
+                if !src.exists() {
+                    bail!("certificate file not found: {}", cert_file);
+                }
+
+                // Copy cert into data-dir/certs/<id>.cert.der
+                let certs_dir = data_dir.join("certs");
+                std::fs::create_dir_all(&certs_dir)?;
+                let dest = certs_dir.join(format!("{id}.cert.der"));
+                std::fs::copy(&src, &dest)
+                    .with_context(|| format!("copying cert to {}", dest.display()))?;
+
+                catalog.add_library(&id, &id, &endpoint, &dest.to_string_lossy())
+                    .with_context(|| format!("adding library '{id}'"))?;
+
+                eprintln!("added library '{id}' at {endpoint}");
+                eprintln!("  cert: {}", dest.display());
+            }
+
+            LibraryCommands::List => {
+                let libs = catalog.list_libraries()?;
+                if libs.is_empty() {
+                    eprintln!("no libraries registered");
+                } else {
+                    for lib in &libs {
+                        let seen = lib.last_seen
+                            .map(|ts| ts.to_string())
+                            .unwrap_or_else(|| "never".into());
+                        println!(
+                            "{:<16} {:<24} {:<10} last_seen={}",
+                            lib.library_id, lib.endpoint, lib.status, seen
+                        );
+                    }
+                }
+            }
+
+            LibraryCommands::Remove { id } => {
+                catalog.remove_library(&id)?;
+                // Remove stored cert if present
+                let cert_file = data_dir.join("certs").join(format!("{id}.cert.der"));
+                if cert_file.exists() {
+                    std::fs::remove_file(&cert_file)?;
+                }
+                eprintln!("removed library '{id}'");
+            }
+
+            LibraryCommands::Ping { id } => {
+                let lib = catalog.get_library(&id)?
+                    .ok_or_else(|| anyhow::anyhow!("unknown library '{id}'"))?;
+                let cert_path_str = catalog.get_library_cert_path(&id)?
+                    .ok_or_else(|| anyhow::anyhow!("no cert path for library '{id}'"))?;
+
+                let hub_cert = cert::load_cert(std::path::Path::new(&cert_path_str))
+                    .with_context(|| format!("loading cert for '{id}'"))?;
+                let client_config = cert::client_config(&hub_cert)
+                    .context("building TLS client config")?;
+
+                let addr: SocketAddr = lib.endpoint.parse()
+                    .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
+
+                let start = Instant::now();
+                match rk_transport::satellite::Satellite::connect(
+                    addr, "localhost", client_config, "rk-ping",
+                ).await {
+                    Ok(_sat) => {
+                        let elapsed = start.elapsed();
+                        catalog.update_library_status(&id, "online")?;
+                        eprintln!("ok ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
+                    }
+                    Err(e) => {
+                        catalog.update_library_status(&id, "offline")?;
+                        bail!("ping failed: {e}");
+                    }
+                }
+            }
+        },
+
+        // ── Fetch command ───────────────────────────────────
+
+        Commands::Fetch { path, grade } => {
+            let (library_id, tape, file_path) = parse_library_tape_path(&path)?;
+
+            let lib = catalog.get_library(library_id)?
+                .ok_or_else(|| anyhow::anyhow!("unknown library '{library_id}'"))?;
+            let cert_path_str = catalog.get_library_cert_path(library_id)?
+                .ok_or_else(|| anyhow::anyhow!("no cert path for library '{library_id}'"))?;
+
+            let hub_cert = cert::load_cert(std::path::Path::new(&cert_path_str))
+                .with_context(|| format!("loading cert for '{library_id}'"))?;
+            let client_config = cert::client_config(&hub_cert)
+                .context("building TLS client config")?;
+
+            let addr: SocketAddr = lib.endpoint.parse()
+                .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
+
+            // Parse grade
+            let grade_val = match grade.to_lowercase().as_str() {
+                "urgent" | "p0" => 0,
+                "normal" | "p1" => 1,
+                "batch"  | "p2" => 2,
+                "background" | "p3" => 3,
+                _ => bail!("unknown grade '{grade}'. Use: urgent, normal, batch, background"),
+            };
+
+            // Look up chunks for this file in the local catalog
+            let chunks = catalog.get_file_chunks(library_id, tape, file_path)?;
+            if chunks.is_empty() {
+                bail!(
+                    "no chunk metadata for {library_id}:{tape}/{file_path}\n\
+                     hint: the satellite needs catalog metadata before fetching. \
+                     Catalog sync is not yet implemented."
+                );
+            }
+
+            // Create a job
+            let job_id = format!("fetch-{}", &blake3::hash(path.as_bytes()).to_hex()[..12]);
+            let total_bytes: u64 = chunks.iter().map(|c| c.size as u64).sum();
+            catalog.create_job(
+                &job_id, library_id, tape, "fetch", grade_val,
+                Some(file_path),
+                Some(chunks.len() as i64),
+                Some(total_bytes as i64),
+            )?;
+
+            eprintln!("fetching {path} ({} chunks, {} bytes)", chunks.len(), total_bytes);
+
+            // Connect to hub
+            let satellite = rk_transport::satellite::Satellite::connect(
+                addr, "localhost", client_config, "rk-fetch",
+            ).await.context("connecting to hub")?;
+
+            catalog.update_job_progress(&job_id, 0, "running")?;
+
+            let mut fetched = 0u64;
+            let mut skipped = 0u64;
+            let mut bytes_transferred = 0u64;
+
+            for (i, chunk) in chunks.iter().enumerate() {
+                // Skip if we already have the chunk locally
+                if store.has(&chunk.hash) {
+                    skipped += 1;
+                    catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+                    continue;
+                }
+
+                // Fetch from hub
+                match satellite.fetch_chunk(&chunk.hash).await? {
+                    Some(data) => {
+                        bytes_transferred += data.len() as u64;
+                        store.put(&data).context("storing fetched chunk")?;
+                        fetched += 1;
+                    }
+                    None => {
+                        let msg = format!("chunk {} not found on hub", chunk.hash.to_hex());
+                        catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                        bail!(msg);
+                    }
+                }
+
+                catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+            }
+
+            catalog.update_job_progress(&job_id, chunks.len() as i64, "completed")?;
+            eprintln!(
+                "done: {} fetched, {} skipped (already local), {} bytes transferred",
+                fetched, skipped, bytes_transferred
+            );
         }
     }
 
