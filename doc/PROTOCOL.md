@@ -10,10 +10,20 @@ library. Streams are multiplexed over that connection. Messages are protobuf
 ## 2. Connection establishment
 
 1. The satellite creates a QUIC client endpoint and connects to the hub address
-   with TLS (rustls).
-2. **Development:** self-signed certificates generated at runtime (rcgen).
-3. **Production (planned):** WireGuard serves as the identity fabric and
-   provides network-level encryption; QUIC runs on top.
+   with TLS 1.3 (rustls).
+2. The hub has a self-signed certificate generated at `rk hub init`. The
+   certificate and private key are stored as DER files in the hub's data
+   directory (`hub.cert.der`, `hub.key.der`).
+3. The satellite pins the hub's certificate at `rk library add --cert`. The
+   cert is copied to `<data-dir>/certs/<library-id>.cert.der` and used for
+   all subsequent connections to that library.
+4. Trust model: **Trust On First Use (TOFU).** The hub's cert is transferred
+   out-of-band (copied manually, USB key, etc.) and pinned by the satellite.
+   There is no CA.
+
+**Planned:**
+- WireGuard as identity fabric and network-level encryption; QUIC on top.
+- Mutual TLS authentication (mTLS) for multi-tenant deployments.
 
 ## 3. Stream types
 
@@ -113,15 +123,23 @@ Multiple chunk request streams can be opened concurrently (QUIC multiplexing).
 - **Unknown stream tag:** the hub closes the stream with an error.
 - **Chunk not found:** the hub responds with `ChunkResponse { found: false }`.
 - **Hash mismatch:** the satellite verifies the BLAKE3 hash after receiving the
-  data and bails on mismatch.
+  data and rejects chunks that don't match. The fetch is aborted with an error.
 - **Connection drop:** the satellite can reconnect and resume, skipping
-  already-fetched chunks.
+  already-fetched chunks (chunk-level resume).
 
 ## 9. Security
 
 **Current:**
-- TLS via rustls with self-signed certificates.
+- TLS 1.3 via rustls with self-signed certificates (rcgen).
+- Certificate pinning: satellite stores hub's cert at `library add` time.
+- Private keys stored with 0o600 permissions, created atomically (no TOCTOU).
+- Library IDs are validated (alphanumeric + hyphens + underscores only) to
+  prevent path traversal.
+- Fetched chunks are verified against their BLAKE3 hash before storage.
+- Certificate fingerprint (BLAKE3 of cert DER) displayed at `hub init`.
 
 **Planned:**
 - WireGuard public key as node identity.
-- Mutual authentication.
+- Mutual TLS authentication.
+- Certificate expiration and rotation.
+- Connection/stream limits and timeouts on hub.

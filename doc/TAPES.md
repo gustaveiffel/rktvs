@@ -60,6 +60,21 @@ Check how much a transfer would cost before fetching anything:
 rk estimate project-x/data/big-model.bin
 ```
 
+### Index in-place (zero-copy)
+
+Reference files without copying them into the chunk store:
+
+```bash
+rk index --tape project-x /data/project-x/
+```
+
+Verify that indexed files are intact:
+
+```bash
+rk verify --tape project-x
+rk verify --tape project-x --blake3   # full hash verification
+```
+
 ### Future commands (not yet implemented)
 
 ```bash

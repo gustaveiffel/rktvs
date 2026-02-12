@@ -175,8 +175,11 @@ client, no GUI required.
 
 This is a young project. Be aware of what it cannot do today:
 
-- **Early stage (MVP).** Core functionality works, but this is not
-  production-hardened software. Expect rough edges.
+- **Alpha stage.** Core functionality works and is tested (80 tests), but this
+  is not production-hardened software. Expect rough edges.
+- **No catalog sync.** The satellite currently needs file/chunk metadata
+  pre-populated in its local catalog. Automatic catalog sync between hub and
+  satellite is the next major feature.
 - **No GUI.** CLI only. If you need a graphical interface, look elsewhere for
   now.
 - **No mobile client.** There is no iOS or Android app. This is a server and
@@ -185,9 +188,8 @@ This is a young project. Be aware of what it cannot do today:
   is no peer-to-peer mesh between satellite nodes.
 - **Single-threaded chunk fetching.** The fetcher currently processes one chunk
   at a time. Parallel chunk fetching is planned but not implemented.
-- **No production TLS.** The current transport uses self-signed certificates
-  generated at runtime. WireGuard-based identity and mutual authentication are
-  planned but not yet implemented.
+- **TLS without mutual auth.** The hub accepts any client that has the public
+  cert. There is no client authentication yet (mTLS or auth tokens).
 
 If any of these are blockers for your use case, rk is probably not ready for
 you yet. Check back later, or contribute.

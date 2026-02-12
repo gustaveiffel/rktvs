@@ -10,18 +10,20 @@ transfer happens over QUIC with a protobuf wire protocol.
 Four crates form the core:
 
 ```
-rk-core       -- catalog (SQLite), chunk store (BLAKE3+zstd), chunker (FastCDC)
+rk-core       -- catalog (SQLite), chunk store (BLAKE3+zstd), chunker (FastCDC),
+                 manifest (zero-copy), indexer, verifier, chunk resolver
 rk-tar        -- streaming tar ingest/export
-rk-transport  -- QUIC hub server + satellite client (quinn), protobuf wire protocol
+rk-transport  -- QUIC hub server + satellite client (quinn), TLS cert management,
+                 protobuf wire protocol
 rk-scheduler  -- grades, cost tiers, job queue, estimation, resumable fetcher
 ```
 
 The `rk` CLI binary lives at the workspace root (`src/main.rs`) and depends on
-`rk-core`, `rk-tar`, and `rk-scheduler`.
+all four crates.
 
 ## Data flow
 
-### Ingest
+### Ingest (tar)
 
 ```
 tar cf - /data | rk ingest --tape backups
@@ -38,6 +40,20 @@ tar cf - /data | rk ingest --tape backups
    `file_chunks` (ordered by `chunk_index`). A global `chunks` row tracks
    size and compressed size with a reference count.
 
+### Index (zero-copy)
+
+```
+rk index --tape backups /data
+```
+
+1. `rk-core::indexer` walks the directory tree with `walkdir`.
+2. Each regular file is split with FastCDC. Chunks are **not** copied --
+   instead, a `Manifest` (`.rkm` file) records each chunk's source file path,
+   byte offset, and length alongside its BLAKE3 hash.
+3. The catalog is populated identically to tar ingest.
+4. At read time, `ChunkResolver` reads chunks directly from the original files
+   using the manifest, falling back to the chunk store if the file has changed.
+
 ### Export
 
 ```
@@ -45,9 +61,22 @@ rk tar backups/src | tar xf -
 ```
 
 1. The catalog is queried for all files matching the tape and path prefix.
-2. For each file, chunks are read in order from the store, decompressed, and
-   concatenated.
+2. For each file, `ChunkResolver` resolves chunks -- from the manifest (zero-copy)
+   or the chunk store (compressed).
 3. A tar entry is written to stdout with the original path, mode, and mtime.
+
+### Verify
+
+```
+rk verify --tape backups --blake3
+```
+
+1. The verifier iterates over all chunks in the manifest.
+2. **Fast mode** (default): checks that source files exist and have not changed
+   size or mtime since indexing.
+3. **BLAKE3 mode** (`--blake3`): re-reads each chunk from the source file and
+   verifies the BLAKE3 hash matches.
+4. Reports: chunks checked, OK, stale (file changed), missing, corrupted.
 
 ### Remote fetch
 
@@ -55,7 +84,8 @@ rk tar backups/src | tar xf -
 satellite --> QUIC --> hub
 ```
 
-1. The satellite opens a QUIC connection to the hub (via `quinn`).
+1. The satellite opens a QUIC connection to the hub (via `quinn`) using a
+   pinned self-signed certificate.
 2. A control stream (`0x00` tag) carries a protobuf `Handshake` /
    `HandshakeAck` exchange.
 3. For each missing chunk the satellite opens a new bidi stream (`0x01` tag),
@@ -65,17 +95,38 @@ satellite --> QUIC --> hub
 5. Chunks already present in the local store are skipped, providing resume
    support after interrupted transfers.
 
+### Hub-satellite TLS
+
+```
+rk hub init          # generates self-signed cert + key (DER format)
+rk hub serve         # starts QUIC server with that cert
+
+rk library add       # satellite copies hub's cert, pins it
+rk library ping      # verifies QUIC handshake with pinned cert
+rk fetch             # fetches chunks over the pinned connection
+```
+
+Trust model: Trust On First Use (TOFU). The hub generates a self-signed
+certificate at `hub init`. The satellite receives the cert out-of-band and
+pins it with `library add --cert`. All subsequent connections verify against
+the pinned certificate.
+
 ## Chunk store layout
 
 ```
 <data-dir>/
-  catalog.db              <-- SQLite (9 tables)
+  catalog.db              <-- SQLite (WAL mode, 9 tables)
+  manifest.rkm            <-- zero-copy chunk manifest (if index was used)
+  hub.cert.der            <-- hub TLS certificate (if hub init was run)
+  hub.key.der             <-- hub TLS private key (mode 0o600)
   chunks/
     ab/
       ab3f...c7.zst       <-- zstd-compressed chunk
     cd/
       cd91...e2.zst
     ...
+  certs/
+    <library-id>.cert.der <-- pinned certs for known libraries
 ```
 
 - Chunks are keyed by the first 2 hex characters of the BLAKE3 hash
@@ -90,7 +141,7 @@ Nine tables, all created on first open:
 
 | Table | Purpose |
 |---|---|
-| `libraries` | Known peers (endpoint, WireGuard pubkey, trust level) |
+| `libraries` | Known peers (endpoint, cert path, trust level) |
 | `tapes` | Named collections of files within a library |
 | `files` | File metadata (path, type, size, mtime, mode, version); soft-deleted via `deleted_at` |
 | `file_chunks` | Ordered mapping of file to chunk hashes (PK: library, tape, path, index) |
@@ -102,6 +153,8 @@ Nine tables, all created on first open:
 
 The catalog is the source of truth for metadata. Chunk data is lazy-fetched --
 the catalog may reference chunks not yet present in the local store.
+
+PRAGMAs: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`.
 
 ## Wire protocol
 
@@ -138,7 +191,7 @@ Jobs are classified by urgency (`Grade`) and the current link cost
 ### Job tracking
 
 Jobs are stored in the `jobs` table with status lifecycle:
-`pending` -> `running` -> `completed` (or `cancelled`).
+`pending` -> `running` -> `completed` (or `cancelled` / `error`).
 
 Progress is tracked per-chunk (`completed_chunks` / `total_chunks`). Jobs are
 ordered by grade (lower = higher priority), then creation time.
@@ -150,6 +203,9 @@ ordered by grade (lower = higher priority), then creation time.
 After each chunk, job progress is updated in the catalog. On completion the
 job status is set to `completed`.
 
+The CLI `rk fetch` command performs the same logic: connect to hub, iterate
+chunks, skip local ones, fetch and verify missing ones, update job progress.
+
 ## Design decisions
 
 | Choice | Over | Why |
@@ -160,13 +216,14 @@ job status is set to `completed`.
 | SQLite | Postgres | Embedded, zero-config, works offline |
 | zstd | gzip | Better compression ratio at higher speed |
 | Protobuf | Text protocols | Typed fields, compact encoding, schema versioning |
+| Self-signed + pinning | CA-signed certs | No CA infrastructure needed for field deployments |
 
 ## Crate dependency graph
 
 ```
 rk (CLI binary)
-  rk-core
-  rk-tar        --> rk-core
-  rk-scheduler  --> rk-core, rk-transport
-                       rk-transport --> rk-core
+  ├── rk-core
+  ├── rk-tar        --> rk-core
+  ├── rk-transport  --> rk-core
+  └── rk-scheduler  --> rk-core, rk-transport
 ```
