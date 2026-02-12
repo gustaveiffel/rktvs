@@ -164,6 +164,21 @@ fn parse_tape_path(input: &str) -> Result<(&str, &str)> {
     }
 }
 
+/// Validate a library ID: alphanumeric, hyphens, underscores only.
+/// Prevents path traversal when the ID is used in filesystem paths.
+fn validate_library_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("library ID cannot be empty");
+    }
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        bail!(
+            "invalid library ID '{id}': only alphanumeric characters, hyphens, \
+             and underscores are allowed"
+        );
+    }
+    Ok(())
+}
+
 /// Parse "<library>:<tape>/<path>" into (library, tape, file_path).
 fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
     let (library, rest) = input
@@ -384,6 +399,7 @@ async fn main() -> Result<()> {
 
         Commands::Library { command } => match command {
             LibraryCommands::Add { id, endpoint, cert: cert_file } => {
+                validate_library_id(&id)?;
                 let src = PathBuf::from(&cert_file);
                 if !src.exists() {
                     bail!("certificate file not found: {}", cert_file);
@@ -421,6 +437,7 @@ async fn main() -> Result<()> {
             }
 
             LibraryCommands::Remove { id } => {
+                validate_library_id(&id)?;
                 catalog.remove_library(&id)?;
                 // Remove stored cert if present
                 let cert_file = data_dir.join("certs").join(format!("{id}.cert.der"));
@@ -533,7 +550,14 @@ async fn main() -> Result<()> {
                 match satellite.fetch_chunk(&chunk.hash).await? {
                     Some(data) => {
                         bytes_transferred += data.len() as u64;
-                        store.put(&data).context("storing fetched chunk")?;
+                        let stored_hash = store.put(&data).context("storing fetched chunk")?;
+                        if stored_hash != chunk.hash {
+                            catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                            bail!(
+                                "hash mismatch for chunk {}: expected {}, got {}",
+                                i, chunk.hash.to_hex(), stored_hash.to_hex()
+                            );
+                        }
                         fetched += 1;
                     }
                     None => {

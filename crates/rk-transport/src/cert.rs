@@ -31,15 +31,28 @@ pub fn save_cert(cert: &CertificateDer<'_>, path: &Path) -> io::Result<()> {
 }
 
 /// Save a DER-encoded private key to disk with restricted permissions (0o600).
+///
+/// On Unix, the file is created with mode 0o600 atomically via OpenOptions
+/// to avoid a TOCTOU window where the key would be world-readable.
 pub fn save_key(key: &PrivatePkcs8KeyDer<'_>, path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, key.secret_pkcs8_der())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(key.secret_pkcs8_der())?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, key.secret_pkcs8_der())?;
     }
     Ok(())
 }
