@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use rk_core::catalog::{Catalog, LibraryRecord};
 use rk_core::chunk_store::ChunkStore;
@@ -245,8 +245,32 @@ async fn connect_to_library(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // User-friendly panic messages instead of raw stack traces
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("unknown error");
+        let location = info.location()
+            .map(|l| format!(" at {}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        eprintln!("rk: internal error: {payload}{location}");
+        eprintln!("this is a bug — please report it at https://github.com/rktvs/rk/issues");
+    }));
+
     tracing_subscriber::fmt::init();
-    let cli = Cli::parse();
+
+    let version: &str = Box::leak(
+        format!(
+            "{} (protocol v{})",
+            env!("CARGO_PKG_VERSION"),
+            rk_transport::satellite::PROTOCOL_VERSION,
+        ).into_boxed_str()
+    );
+    let cli = Cli::from_arg_matches(
+        &Cli::command().version(version).get_matches(),
+    ).context("parsing arguments")?;
     let data_dir = resolve_data_dir(&cli.data_dir);
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating data directory: {}", data_dir.display()))?;
@@ -290,14 +314,32 @@ async fn main() -> Result<()> {
                 .context("exporting tar")?;
         }
         Commands::Ls { path } => {
-            let (tape, prefix) = parse_tape_path(&path)?;
+            // Support both "tape/path" (local) and "library:tape/path" (remote)
+            let (library_id, tape, prefix) = if path.contains(':') {
+                parse_library_tape_path(&path)?
+            } else {
+                let (tape, prefix) = parse_tape_path(&path)?;
+                ("local", tape, prefix)
+            };
             let files = catalog
-                .list_files("local", tape, prefix)
+                .list_files(library_id, tape, prefix)
                 .context("listing files")?;
-            for f in &files {
-                let kind = if f.entry_type == 2 { "d" } else { "-" };
-                let mode = f.mode.unwrap_or(0);
-                println!("{}{:03o}  {:>10}  {}", kind, mode, f.size, f.path);
+            if files.is_empty() {
+                if library_id != "local" {
+                    eprintln!(
+                        "no files found for {path}\n\
+                         hint: catalog sync is not yet implemented — \
+                         the satellite needs metadata before browsing remote files"
+                    );
+                } else {
+                    eprintln!("no files found in {path}");
+                }
+            } else {
+                for f in &files {
+                    let kind = if f.entry_type == 2 { "d" } else { "-" };
+                    let mode = f.mode.unwrap_or(0);
+                    println!("{}{:03o}  {:>10}  {}", kind, mode, f.size, f.path);
+                }
             }
         }
         Commands::Estimate { path } => {
@@ -449,7 +491,7 @@ async fn main() -> Result<()> {
                     .await
                     .context("binding hub server")?;
 
-                eprintln!("hub listening on {}", hub.local_addr());
+                eprintln!("rk hub v{} listening on {}", env!("CARGO_PKG_VERSION"), hub.local_addr());
                 hub.run().await;
             }
         },

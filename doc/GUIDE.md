@@ -100,6 +100,13 @@ All rk state lives in a single directory: `~/.rk` by default. Override with
 
 ## 3. Getting Started
 
+Check version (includes protocol version for debugging compatibility issues):
+
+```bash
+rk --version
+# rk 0.1.0 (protocol v2)
+```
+
 Every rk command operates on a data directory. You don't need to initialize
 it explicitly -- it's created on first use.
 
@@ -163,6 +170,12 @@ rk ls myproject/src/
 rk ls myproject/src/main.rs
 ```
 
+For remote libraries (requires catalog sync):
+
+```bash
+rk ls myhub:project/src/
+```
+
 Output:
 
 ```
@@ -172,7 +185,8 @@ d755          0  src/utils/
 ```
 
 The format is: `type+mode  size  path`. Type is `-` for files, `d` for
-directories.
+directories. If no files are found, a message is displayed with a hint
+for remote libraries.
 
 ### Export to tar
 
@@ -372,6 +386,12 @@ TLS Server Name Indication (SNI). Invalid endpoints are rejected at add time.
 
 Library IDs must be alphanumeric with hyphens and underscores only
 (e.g., `my-hub`, `office_west`, `hub01`).
+
+To replace an existing library (e.g., after certificate rotation on the hub):
+
+```bash
+rk library add myhub 192.168.1.10:4443 --cert /new/hub.cert.der --force
+```
 
 ### List libraries
 

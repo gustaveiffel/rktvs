@@ -66,7 +66,7 @@ impl Hub {
                 };
                 match incoming.await {
                     Ok(conn) => {
-                        info!(remote = %conn.remote_address(), "connection accepted");
+                        info!(remote = %conn.remote_address(), version = env!("CARGO_PKG_VERSION"), "connection accepted");
                         if let Err(e) = handle_connection(conn, store, manifest).await {
                             warn!("connection error: {e}");
                         }

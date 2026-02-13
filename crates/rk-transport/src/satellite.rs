@@ -27,6 +27,7 @@ pub struct ChunkFetchResult {
 
 pub struct Satellite {
     connection: Connection,
+    _endpoint: Endpoint,
     pub satellite_id: String,
 }
 
@@ -42,7 +43,7 @@ impl Satellite {
         endpoint.set_default_client_config(client_config);
 
         let connection = endpoint.connect(hub_addr, server_name)?.await?;
-        info!(hub = %hub_addr, "connected to hub");
+        info!(hub = %hub_addr, version = env!("CARGO_PKG_VERSION"), "connected to hub");
 
         // Open control stream and handshake
         let (mut send, mut recv) = connection.open_bi().await?;
@@ -75,6 +76,7 @@ impl Satellite {
 
         Ok(Self {
             connection,
+            _endpoint: endpoint,
             satellite_id: satellite_id.to_string(),
         })
     }

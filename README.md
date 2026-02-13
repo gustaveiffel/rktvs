@@ -117,14 +117,16 @@ rk jobs --status pending
 |---|---|
 | `rk ingest --tape <name>` | Read a tar archive from stdin, chunk and store it |
 | `rk tar <tape>/<path>` | Export files as a tar archive to stdout |
-| `rk ls <tape>/<path>` | List files in the catalog |
+| `rk ls <tape>/<path>` | List local files in the catalog |
+| `rk ls <library>:<tape>/<path>` | List remote library files (requires catalog sync) |
+| `rk --version` | Show version and protocol version |
 | `rk index --tape <name> <dir>` | Index files in-place (zero-copy by-reference chunking) |
 | `rk verify [--tape <name>] [--blake3]` | Verify integrity of indexed files |
 | `rk estimate <tape>/<path>` | Estimate transfer cost (chunks needed, bytes to fetch) |
 | `rk jobs [--status <s>]` | List transfer jobs, optionally filtered by status |
 | `rk hub init [--listen <addr>] [--san <ip-or-host>]...` | Initialize a hub (generates TLS certificate) |
 | `rk hub serve [--listen <addr>]` | Start the hub QUIC server |
-| `rk library add <id> <endpoint> --cert <path>` | Register a remote library with cert pinning |
+| `rk library add <id> <endpoint> --cert <path> [--force]` | Register a remote library with cert pinning |
 | `rk library list` | List known libraries |
 | `rk library remove <id>` | Remove a library |
 | `rk library ping <id>` | Ping a library to check connectivity |
