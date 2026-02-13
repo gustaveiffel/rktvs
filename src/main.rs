@@ -696,15 +696,19 @@ async fn main() -> Result<()> {
                 );
             }
 
-            // Create a job
+            // Create or reuse a job (deterministic ID allows resume)
             let job_id = format!("fetch-{}", &blake3::hash(path.as_bytes()).to_hex()[..12]);
             let total_bytes: u64 = chunks.iter().map(|c| c.size as u64).sum();
-            catalog.create_job(
-                &job_id, library_id, tape, "fetch", grade_val,
-                Some(file_path),
-                Some(chunks.len() as i64),
-                Some(total_bytes as i64),
-            )?;
+            if let Some(existing) = catalog.get_job(&job_id)? {
+                eprintln!("resuming job {} (was {})", job_id, existing.status);
+            } else {
+                catalog.create_job(
+                    &job_id, library_id, tape, "fetch", grade_val,
+                    Some(file_path),
+                    Some(chunks.len() as i64),
+                    Some(total_bytes as i64),
+                )?;
+            }
 
             eprintln!("fetching {path} ({} chunks, {} bytes)", chunks.len(), total_bytes);
 
