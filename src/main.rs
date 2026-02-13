@@ -205,6 +205,54 @@ fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
     Ok((library, tape, path))
 }
 
+/// Simple glob matching for file paths.
+/// Supports `*` (any chars except `/`) and `?` (any single char except `/`).
+/// Pattern is matched against the full path (not just the filename).
+fn glob_match(pattern: &str, path: &str) -> bool {
+    fn do_match(pat: &[u8], text: &[u8]) -> bool {
+        let (mut pi, mut ti) = (0, 0);
+        let (mut star_pi, mut star_ti) = (usize::MAX, 0);
+
+        while ti < text.len() {
+            if pi < pat.len() && pat[pi] == b'?' && text[ti] != b'/' {
+                pi += 1;
+                ti += 1;
+            } else if pi < pat.len() && pat[pi] == b'*' {
+                star_pi = pi;
+                star_ti = ti;
+                pi += 1;
+            } else if pi < pat.len() && pat[pi] == text[ti] {
+                pi += 1;
+                ti += 1;
+            } else if star_pi != usize::MAX {
+                // Backtrack: * should not match /
+                star_ti += 1;
+                if text[star_ti - 1] == b'/' {
+                    return false;
+                }
+                ti = star_ti;
+                pi = star_pi + 1;
+            } else {
+                return false;
+            }
+        }
+        // Skip trailing stars
+        while pi < pat.len() && pat[pi] == b'*' {
+            pi += 1;
+        }
+        pi == pat.len()
+    }
+
+    // Pattern from CLI doesn't have leading /, but catalog paths do
+    let normalized = if !pattern.starts_with('/') && path.starts_with('/') {
+        format!("/{pattern}")
+    } else {
+        pattern.to_string()
+    };
+
+    do_match(normalized.as_bytes(), path.as_bytes())
+}
+
 /// Resolve a relative cert path against the data directory.
 fn resolve_cert_path(data_dir: &Path, rel: &str) -> PathBuf {
     data_dir.join(rel)
@@ -687,91 +735,128 @@ async fn main() -> Result<()> {
                 _ => bail!("unknown grade '{grade}'. Use: urgent, normal, batch, background"),
             };
 
-            // Look up chunks for this file in the local catalog
-            let chunks = catalog.get_file_chunks(library_id, tape, file_path)?;
-            if chunks.is_empty() {
-                bail!(
-                    "no chunk metadata for {library_id}:{tape}/{file_path}\n\
-                     hint: run `rk library sync {library_id}` to fetch catalog metadata first"
-                );
-            }
-
-            // Create or reuse a job (deterministic ID allows resume)
-            let job_id = format!("fetch-{}", &blake3::hash(path.as_bytes()).to_hex()[..12]);
-            let total_bytes: u64 = chunks.iter().map(|c| c.size as u64).sum();
-            if let Some(existing) = catalog.get_job(&job_id)? {
-                eprintln!("resuming job {} (was {})", job_id, existing.status);
+            // Resolve file list — expand globs if the path contains wildcards
+            let file_paths: Vec<String> = if file_path.contains('*') || file_path.contains('?') {
+                // Extract the directory prefix before the first wildcard
+                let prefix = match file_path.rfind('/') {
+                    Some(pos) if pos < file_path.find(['*', '?']).unwrap_or(file_path.len()) => {
+                        &file_path[..=pos]
+                    }
+                    _ => "/",
+                };
+                let files = catalog.list_files(library_id, tape, prefix)?;
+                if files.is_empty() {
+                    bail!(
+                        "no files found matching {library_id}:{tape}/{file_path}\n\
+                         hint: run `rk library sync {library_id}` to fetch catalog metadata first"
+                    );
+                }
+                let matched: Vec<String> = files
+                    .into_iter()
+                    .filter(|f| f.entry_type == 1 && glob_match(file_path, &f.path))
+                    .map(|f| f.path)
+                    .collect();
+                if matched.is_empty() {
+                    bail!("no files match pattern '{file_path}' in {library_id}:{tape}/");
+                }
+                eprintln!("{} files match pattern", matched.len());
+                matched
             } else {
-                catalog.create_job(
-                    &job_id, library_id, tape, "fetch", grade_val,
-                    Some(file_path),
-                    Some(chunks.len() as i64),
-                    Some(total_bytes as i64),
-                )?;
-            }
+                vec![file_path.to_string()]
+            };
 
-            eprintln!("fetching {path} ({} chunks, {} bytes)", chunks.len(), total_bytes);
-
-            // Connect to hub (with 10s timeout built into connect_to_library)
+            // Connect once, fetch all matching files
             let (satellite, _lib) = connect_to_library(&catalog, &data_dir, library_id, "rk-fetch").await?;
 
-            catalog.update_job_progress(&job_id, 0, "running")?;
+            let mut total_fetched = 0u64;
+            let mut total_skipped = 0u64;
+            let mut total_bytes_transferred = 0u64;
 
-            let mut fetched = 0u64;
-            let mut skipped = 0u64;
-            let mut bytes_transferred = 0u64;
-
-            for (i, chunk) in chunks.iter().enumerate() {
-                // Skip if we already have the chunk locally
-                if store.has(&chunk.hash) {
-                    skipped += 1;
-                    catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+            for fp in &file_paths {
+                let chunks = catalog.get_file_chunks(library_id, tape, fp)?;
+                if chunks.is_empty() {
+                    eprintln!("skipping {fp} (no chunk metadata)");
                     continue;
                 }
 
-                // Fetch from hub (with 30s timeout per chunk)
-                let resp = tokio::time::timeout(
-                    Duration::from_secs(30),
-                    satellite.fetch_chunk(&chunk.hash),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("chunk fetch timed out after 30s"))?
-                .context("fetching chunk")?;
+                let fetch_path = format!("{library_id}:{tape}/{fp}");
+                let job_id = format!("fetch-{}", &blake3::hash(fetch_path.as_bytes()).to_hex()[..12]);
+                let total_bytes: u64 = chunks.iter().map(|c| c.size as u64).sum();
 
-                match resp {
-                    Some(resp) => {
-                        bytes_transferred += resp.data.len() as u64;
-                        if resp.compressed {
-                            // Hub sent compressed zstd bytes — store directly
-                            store.put_compressed(&chunk.hash, &resp.data)
-                                .context("storing compressed chunk")?;
-                        } else {
-                            // Hub sent decompressed bytes — compress and store
-                            let stored_hash = store.put(&resp.data).context("storing fetched chunk")?;
-                            if stored_hash != chunk.hash {
-                                catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
-                                bail!(
-                                    "hash mismatch for chunk {}: expected {}, got {}",
-                                    i, chunk.hash.to_hex(), stored_hash.to_hex()
-                                );
-                            }
-                        }
-                        fetched += 1;
+                if let Some(existing) = catalog.get_job(&job_id)? {
+                    if existing.status == "completed" {
+                        eprintln!("skipping {fp} (already fetched)");
+                        total_skipped += chunks.len() as u64;
+                        continue;
                     }
-                    None => {
-                        let msg = format!("chunk {} not found on hub", chunk.hash.to_hex());
-                        catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
-                        bail!(msg);
-                    }
+                    eprintln!("resuming {fp} (was {})", existing.status);
+                } else {
+                    catalog.create_job(
+                        &job_id, library_id, tape, "fetch", grade_val,
+                        Some(fp.as_str()),
+                        Some(chunks.len() as i64),
+                        Some(total_bytes as i64),
+                    )?;
                 }
 
-                catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+                eprintln!("fetching {fp} ({} chunks, {} bytes)", chunks.len(), total_bytes);
+                catalog.update_job_progress(&job_id, 0, "running")?;
+
+                let mut file_ok = true;
+                for (i, chunk) in chunks.iter().enumerate() {
+                    if store.has(&chunk.hash) {
+                        total_skipped += 1;
+                        catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+                        continue;
+                    }
+
+                    let resp = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        satellite.fetch_chunk(&chunk.hash),
+                    )
+                    .await
+                    .map_err(|_| anyhow::anyhow!("chunk fetch timed out after 30s"))?
+                    .context("fetching chunk")?;
+
+                    match resp {
+                        Some(resp) => {
+                            total_bytes_transferred += resp.data.len() as u64;
+                            if resp.compressed {
+                                store.put_compressed(&chunk.hash, &resp.data)
+                                    .context("storing compressed chunk")?;
+                            } else {
+                                let stored_hash = store.put(&resp.data).context("storing fetched chunk")?;
+                                if stored_hash != chunk.hash {
+                                    catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                                    eprintln!(
+                                        "error: hash mismatch for chunk {} in {fp}: expected {}, got {}",
+                                        i, chunk.hash.to_hex(), stored_hash.to_hex()
+                                    );
+                                    file_ok = false;
+                                    break;
+                                }
+                            }
+                            total_fetched += 1;
+                        }
+                        None => {
+                            catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                            eprintln!("error: chunk {} not found on hub for {fp}", chunk.hash.to_hex());
+                            file_ok = false;
+                            break;
+                        }
+                    }
+
+                    catalog.update_job_progress(&job_id, (i + 1) as i64, "running")?;
+                }
+
+                if file_ok {
+                    catalog.update_job_progress(&job_id, chunks.len() as i64, "completed")?;
+                }
             }
 
-            catalog.update_job_progress(&job_id, chunks.len() as i64, "completed")?;
             eprintln!(
-                "done: {} fetched, {} skipped (already local), {} bytes transferred",
-                fetched, skipped, bytes_transferred
+                "done: {} fetched, {} skipped, {} bytes transferred ({} files)",
+                total_fetched, total_skipped, total_bytes_transferred, file_paths.len()
             );
         }
     }
