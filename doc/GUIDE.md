@@ -272,7 +272,7 @@ A hub serves chunks to satellites over QUIC.
 ### Initialize
 
 ```bash
-rk --data-dir /srv/rk-hub hub init
+rk --data-dir /srv/rk-hub hub init --san 192.168.1.10
 ```
 
 This generates a self-signed TLS certificate and private key:
@@ -282,10 +282,24 @@ hub initialized
   cert:        /srv/rk-hub/hub.cert.der
   key:         /srv/rk-hub/hub.key.der
   fingerprint: 3a7f...b2c1
+  sans:        localhost, 127.0.0.1, 192.168.1.10
   listen:      0.0.0.0:4443
 
 share /srv/rk-hub/hub.cert.der with satellites to connect
 ```
+
+The `--san` flag adds Subject Alternative Names to the certificate. **You must
+include every IP or hostname that satellites will use to connect.** The
+certificate always includes `localhost` and `127.0.0.1`. You can pass `--san`
+multiple times:
+
+```bash
+rk hub init --san 192.168.1.10 --san hub.example.com
+```
+
+If you forget a SAN, satellites connecting to that address will get a TLS
+certificate mismatch error. The fix is to regenerate the certificate (see
+Re-initialization below).
 
 The certificate file (`hub.cert.der`) must be shared with satellites out-of-band
 (copied via USB, scp, etc.). This is the Trust On First Use (TOFU) model.
@@ -322,14 +336,15 @@ rk --data-dir /srv/rk-hub hub serve --listen 192.168.1.10:5000
 
 ### Re-initialization
 
-If you need to regenerate the certificate:
+If you need to regenerate the certificate (e.g., to add a missing SAN):
 
 ```bash
 rm /srv/rk-hub/hub.cert.der /srv/rk-hub/hub.key.der
-rk --data-dir /srv/rk-hub hub init --listen 192.168.1.10:5000
+rk --data-dir /srv/rk-hub hub init --san 192.168.1.10 --listen 192.168.1.10:5000
 ```
 
-All satellites will need the new certificate.
+All satellites will need the new certificate. On each satellite, remove the
+old library and re-add with the new cert.
 
 ---
 
@@ -558,7 +573,7 @@ grade.
 
 A complete walkthrough of setting up a hub and fetching files from a satellite.
 This tutorial uses two terminals on the same machine, but the same steps work
-across machines.
+across machines (add `--san <hub-ip>` at init time if connecting by IP).
 
 ### Step 1: Set up the hub
 
@@ -566,9 +581,11 @@ across machines.
 # Create hub data directory and initialize
 mkdir -p /tmp/rk-hub
 rk --data-dir /tmp/rk-hub hub init
+# For cross-machine: rk --data-dir /tmp/rk-hub hub init --san 192.168.1.10
 ```
 
-Note the certificate path in the output. You'll need it for the satellite.
+Note the certificate path and SANs in the output. You'll need the cert for
+the satellite.
 
 ### Step 2: Add content to the hub
 
@@ -662,12 +679,29 @@ Examples: `my-hub`, `hub_01`, `office`. Not allowed: `../hack`, `my hub`,
 The `--cert` path passed to `library add` doesn't exist. Check the path. The
 cert is typically at `<hub-data-dir>/hub.cert.der`.
 
+### "ping failed: ... certificate not valid for name"
+
+The hub's TLS certificate does not include the IP or hostname the satellite is
+connecting to. Regenerate the hub cert with the correct `--san` flag:
+
+```bash
+rm <hub-data-dir>/hub.cert.der <hub-data-dir>/hub.key.der
+rk hub init --san <hub-ip>
+```
+
+Then redistribute the new cert to all satellites.
+
 ### "ping failed: connection refused"
 
 The hub is not running or the address is wrong. Check:
 - Is `rk hub serve` running?
 - Is the endpoint address correct in `library list`?
 - Are firewall rules allowing UDP traffic on the port (QUIC uses UDP)?
+
+### "handshake rejected: protocol version ... too old"
+
+The hub and satellite are running different protocol versions. Both sides must
+be upgraded to the same version. Rebuild and redeploy the outdated binary.
 
 ### "no chunk metadata for ..."
 

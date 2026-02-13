@@ -13,7 +13,10 @@ library. Streams are multiplexed over that connection. Messages are protobuf
    with TLS 1.3 (rustls).
 2. The hub has a self-signed certificate generated at `rk hub init`. The
    certificate and private key are stored as DER files in the hub's data
-   directory (`hub.cert.der`, `hub.key.der`).
+   directory (`hub.cert.der`, `hub.key.der`). The certificate's Subject
+   Alternative Names (SANs) must include every IP or hostname satellites
+   will use to connect (`--san` flag at init time). Defaults: `localhost`,
+   `127.0.0.1`.
 3. The satellite pins the hub's certificate at `rk library add --cert`. The
    cert is copied to `<data-dir>/certs/<library-id>.cert.der` and stored as a
    **relative path** (`certs/<id>.cert.der`) in the catalog. This makes the
@@ -70,10 +73,17 @@ message Handshake {
 message HandshakeAck {
   bool ok = 1;
   string message = 2;
+  uint32 protocol_version = 3;
 }
 ```
 
-Current `protocol_version`: **1**.
+Current `protocol_version`: **2** (introduced with compressed wire transfer).
+
+**Version negotiation:** the satellite sends its version in `Handshake`. The
+hub checks it against its minimum supported version and rejects with
+`ok = false` and a descriptive message if too old. The hub sends its own
+version back in `HandshakeAck.protocol_version`. The satellite checks the
+hub's version and aborts if too old. Both sides must be at version >= 2.
 
 ## 6. CHUNK_REQUEST stream (tag 0x01)
 

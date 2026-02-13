@@ -353,6 +353,9 @@ on `spawn_blocking` to avoid stalling the async runtime. Chunks from the store
 are served compressed (`compressed = true`); chunks from the manifest are
 served decompressed (`compressed = false`).
 
+**Protocol version:** `hub::PROTOCOL_VERSION` (currently 2). The hub rejects
+satellites with an older protocol version at handshake time.
+
 ### Satellite
 
 QUIC client that connects to a hub and fetches chunks.
@@ -382,6 +385,11 @@ if let Some(r) = result {
 ```
 
 **ChunkFetchResult fields:** `data: Vec<u8>`, `compressed: bool`.
+
+**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 2). The
+satellite rejects hubs with an older protocol version at handshake time.
+The `server_name` must match a SAN in the hub's certificate (use `--san`
+at `hub init` time).
 
 ---
 

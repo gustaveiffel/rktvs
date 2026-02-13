@@ -68,10 +68,11 @@ rk verify --tape myproject --blake3   # full hash verification
 
 ### Run a hub server
 
-Initialize a hub (generates TLS certificate):
+Initialize a hub (generates TLS certificate). Use `--san` for every IP or
+hostname satellites will connect to:
 
 ```bash
-rk --data-dir /tmp/rk-hub hub init
+rk --data-dir /tmp/rk-hub hub init --san 192.168.1.10
 ```
 
 Ingest some content on the hub, then start serving:
@@ -121,7 +122,7 @@ rk jobs --status pending
 | `rk verify [--tape <name>] [--blake3]` | Verify integrity of indexed files |
 | `rk estimate <tape>/<path>` | Estimate transfer cost (chunks needed, bytes to fetch) |
 | `rk jobs [--status <s>]` | List transfer jobs, optionally filtered by status |
-| `rk hub init [--listen <addr>]` | Initialize a hub (generates TLS certificate) |
+| `rk hub init [--listen <addr>] [--san <ip-or-host>]...` | Initialize a hub (generates TLS certificate) |
 | `rk hub serve [--listen <addr>]` | Start the hub QUIC server |
 | `rk library add <id> <endpoint> --cert <path>` | Register a remote library with cert pinning |
 | `rk library list` | List known libraries |
