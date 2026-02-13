@@ -487,7 +487,7 @@ async fn main() -> Result<()> {
                 let store = Arc::new(store);
                 let manifest = manifest.map(Arc::new);
 
-                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest)
+                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest, None)
                     .await
                     .context("binding hub server")?;
 

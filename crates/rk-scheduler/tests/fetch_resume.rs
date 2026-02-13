@@ -43,7 +43,7 @@ async fn fetch_file_with_resume() {
     let server_config = cert::server_config(cert.clone(), key).unwrap();
     let client_config = cert::client_config(&cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, hub_store, None)
+    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, hub_store, None, None)
         .await
         .unwrap();
     let hub_addr = hub.local_addr();

@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use quinn::{Endpoint, RecvStream, SendStream};
+use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_core::manifest::Manifest;
 use rk_core::resolver::ChunkResolver;
@@ -16,7 +17,7 @@ use crate::proto;
 
 /// Current wire protocol version.
 /// Bump when ChunkResponse or stream semantics change in incompatible ways.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Minimum protocol version this hub accepts from satellites.
 const MIN_PROTOCOL_VERSION: u32 = 2;
@@ -28,6 +29,7 @@ pub struct Hub {
     endpoint: Endpoint,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
     conn_semaphore: Arc<Semaphore>,
 }
 
@@ -38,12 +40,14 @@ impl Hub {
         server_config: quinn::ServerConfig,
         store: Arc<ChunkStore>,
         manifest: Option<Arc<Manifest>>,
+        catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
     ) -> std::io::Result<Self> {
         let endpoint = Endpoint::server(server_config, addr)?;
         Ok(Self {
             endpoint,
             store,
             manifest,
+            catalog,
             conn_semaphore: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         })
     }
@@ -58,6 +62,7 @@ impl Hub {
         while let Some(incoming) = self.endpoint.accept().await {
             let store = self.store.clone();
             let manifest = self.manifest.clone();
+            let catalog = self.catalog.clone();
             let semaphore = self.conn_semaphore.clone();
             tokio::spawn(async move {
                 let _permit = match semaphore.acquire().await {
@@ -67,7 +72,7 @@ impl Hub {
                 match incoming.await {
                     Ok(conn) => {
                         info!(remote = %conn.remote_address(), version = env!("CARGO_PKG_VERSION"), "connection accepted");
-                        if let Err(e) = handle_connection(conn, store, manifest).await {
+                        if let Err(e) = handle_connection(conn, store, manifest, catalog).await {
                             warn!("connection error: {e}");
                         }
                     }
@@ -82,13 +87,15 @@ async fn handle_connection(
     conn: quinn::Connection,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
 ) -> anyhow::Result<()> {
     loop {
         let (send, recv) = conn.accept_bi().await?;
         let store = store.clone();
         let manifest = manifest.clone();
+        let catalog = catalog.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(send, recv, store, manifest).await {
+            if let Err(e) = handle_stream(send, recv, store, manifest, catalog).await {
                 warn!("stream error: {e}");
             }
         });
@@ -100,6 +107,7 @@ async fn handle_stream(
     mut recv: RecvStream,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
 ) -> anyhow::Result<()> {
     // Read the 1-byte stream tag
     let mut tag_buf = [0u8; 1];
@@ -111,6 +119,9 @@ async fn handle_stream(
         StreamTag::Control => handle_control(&mut send, &mut recv).await?,
         StreamTag::ChunkRequest => {
             handle_chunk_request(&mut send, &mut recv, store, manifest).await?;
+        }
+        StreamTag::CatalogSync => {
+            handle_catalog_sync(&mut send, &mut recv, catalog).await?;
         }
     }
 
@@ -202,6 +213,93 @@ async fn handle_chunk_request(
     Ok(())
 }
 
+async fn handle_catalog_sync(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
+) -> anyhow::Result<()> {
+    let data = recv.read_to_end(4096).await?;
+    let req = proto::CatalogSyncRequest::decode_length_delimited(data.as_slice())?;
+
+    let catalog = match catalog {
+        Some(cat) => cat,
+        None => {
+            let resp = proto::CatalogSyncResponse {
+                ok: false,
+                message: "hub has no catalog configured".into(),
+                tapes: vec![],
+                files: vec![],
+            };
+            let encoded = frame::encode_msg(&resp);
+            send.write_all(&encoded).await?;
+            send.finish()?;
+            return Ok(());
+        }
+    };
+
+    let resp = tokio::task::spawn_blocking(move || {
+        let cat = catalog.lock().expect("catalog lock poisoned");
+
+        if req.tape.is_empty() {
+            // List tapes
+            let tapes = cat.list_tapes("local").unwrap_or_default();
+            let tape_infos: Vec<proto::TapeInfo> = tapes
+                .into_iter()
+                .map(|t| proto::TapeInfo {
+                    name: t.tape_name,
+                    file_count: t.file_count,
+                    total_size: t.total_size,
+                })
+                .collect();
+            proto::CatalogSyncResponse {
+                ok: true,
+                message: String::new(),
+                tapes: tape_infos,
+                files: vec![],
+            }
+        } else {
+            // Get all files with chunks for the requested tape
+            match cat.get_all_files_with_chunks("local", &req.tape) {
+                Ok(files) => {
+                    let file_metas: Vec<proto::FileMetadata> = files
+                        .into_iter()
+                        .map(|f| proto::FileMetadata {
+                            path: f.path,
+                            entry_type: f.entry_type,
+                            size: f.size,
+                            mtime: f.mtime.unwrap_or(0),
+                            mode: f.mode.unwrap_or(0),
+                            version: f.version,
+                            chunks: f.chunks.into_iter().map(|c| proto::ChunkInfo {
+                                hash: c.hash.as_bytes().to_vec(),
+                                offset: c.offset,
+                                size: c.size as u64,
+                            }).collect(),
+                        })
+                        .collect();
+                    proto::CatalogSyncResponse {
+                        ok: true,
+                        message: String::new(),
+                        tapes: vec![],
+                        files: file_metas,
+                    }
+                }
+                Err(e) => proto::CatalogSyncResponse {
+                    ok: false,
+                    message: format!("catalog error: {e}"),
+                    tapes: vec![],
+                    files: vec![],
+                },
+            }
+        }
+    }).await?;
+
+    let encoded = frame::encode_msg(&resp);
+    send.write_all(&encoded).await?;
+    send.finish()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +312,7 @@ mod tests {
         let (cert, key) = crate::cert::generate_self_signed().unwrap();
         let server_config = crate::cert::server_config(cert, key).unwrap();
 
-        let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None).await.unwrap();
+        let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None).await.unwrap();
         let addr = hub.local_addr();
         assert_ne!(addr.port(), 0);
     }
