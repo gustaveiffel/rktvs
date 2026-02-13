@@ -9,6 +9,12 @@ use tracing::info;
 use crate::frame::{self, StreamTag};
 use crate::proto;
 
+/// Protocol version this satellite speaks.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Minimum hub protocol version this satellite accepts.
+const MIN_HUB_VERSION: u32 = 2;
+
 /// Maximum response size for a chunk fetch.
 /// 16 MB max chunk + protobuf overhead + safety margin.
 const MAX_CHUNK_RESPONSE: usize = 17 * 1024 * 1024;
@@ -47,7 +53,7 @@ impl Satellite {
         // Send handshake
         let handshake = proto::Handshake {
             satellite_id: satellite_id.into(),
-            protocol_version: 1,
+            protocol_version: PROTOCOL_VERSION,
         };
         let encoded = frame::encode_msg(&handshake);
         send.write_all(&encoded).await?;
@@ -59,7 +65,13 @@ impl Satellite {
         if !ack.ok {
             anyhow::bail!("handshake rejected: {}", ack.message);
         }
-        info!("handshake ok: {}", ack.message);
+        if ack.protocol_version < MIN_HUB_VERSION {
+            anyhow::bail!(
+                "hub protocol version {} too old, satellite requires >= {} — upgrade the hub",
+                ack.protocol_version, MIN_HUB_VERSION,
+            );
+        }
+        info!(hub_version = ack.protocol_version, "handshake ok: {}", ack.message);
 
         Ok(Self {
             connection,

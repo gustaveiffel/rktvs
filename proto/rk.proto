@@ -9,6 +9,7 @@ message Handshake {
 message HandshakeAck {
   bool ok = 1;
   string message = 2;
+  uint32 protocol_version = 3;
 }
 
 message ChunkRequest {

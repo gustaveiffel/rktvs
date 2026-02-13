@@ -14,6 +14,13 @@ use tracing::{info, warn};
 use crate::frame::{self, StreamTag};
 use crate::proto;
 
+/// Current wire protocol version.
+/// Bump when ChunkResponse or stream semantics change in incompatible ways.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Minimum protocol version this hub accepts from satellites.
+const MIN_PROTOCOL_VERSION: u32 = 2;
+
 /// Maximum concurrent connections the hub will accept.
 const MAX_CONNECTIONS: usize = 1024;
 
@@ -115,9 +122,25 @@ async fn handle_control(send: &mut SendStream, recv: &mut RecvStream) -> anyhow:
     let handshake = proto::Handshake::decode_length_delimited(data.as_slice())?;
     info!(satellite = %handshake.satellite_id, version = handshake.protocol_version, "handshake");
 
+    if handshake.protocol_version < MIN_PROTOCOL_VERSION {
+        let ack = proto::HandshakeAck {
+            ok: false,
+            message: format!(
+                "protocol version {} too old, hub requires >= {} — upgrade your rk binary",
+                handshake.protocol_version, MIN_PROTOCOL_VERSION,
+            ),
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let encoded = frame::encode_msg(&ack);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+        return Ok(());
+    }
+
     let ack = proto::HandshakeAck {
         ok: true,
         message: "welcome".into(),
+        protocol_version: PROTOCOL_VERSION,
     };
     let encoded = frame::encode_msg(&ack);
     send.write_all(&encoded).await?;
