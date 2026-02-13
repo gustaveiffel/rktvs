@@ -110,7 +110,10 @@ impl ChunkStore {
     pub fn chunk_path(&self, hash: &blake3::Hash) -> PathBuf {
         let hex = hash.to_hex();
         let hex = hex.as_str();
-        self.base.join("chunks").join(&hex[..2]).join(format!("{hex}.zst"))
+        self.base
+            .join("chunks")
+            .join(&hex[..2])
+            .join(format!("{hex}.zst"))
     }
 }
 

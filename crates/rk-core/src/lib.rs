@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! Core library for rk: content-addressed chunk store, FastCDC chunker,
+//! SQLite catalog, manifest (zero-copy by-reference chunking), indexer,
+//! and verifier.
+
 pub mod catalog;
 pub mod chunk_store;
 pub mod chunker;

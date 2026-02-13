@@ -95,12 +95,28 @@ mod tests {
         fs::write(&src, content).unwrap();
 
         let meta = fs::metadata(&src).unwrap();
-        let mtime = meta.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let mut m = Manifest::new();
-        let idx = m.add_source(src.to_string_lossy().to_string(), content.len() as u64, mtime);
+        let idx = m.add_source(
+            src.to_string_lossy().to_string(),
+            content.len() as u64,
+            mtime,
+        );
         let hash = blake3::hash(content);
-        m.insert_chunk(hash, ChunkRef { path_index: idx, offset: 0, length: content.len() as u32 });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: content.len() as u32,
+            },
+        );
 
         let result = verify_manifest(&m, false);
         assert_eq!(result.chunks_checked, 1);
@@ -117,12 +133,28 @@ mod tests {
         fs::write(&src, content).unwrap();
 
         let meta = fs::metadata(&src).unwrap();
-        let mtime = meta.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let mut m = Manifest::new();
-        let idx = m.add_source(src.to_string_lossy().to_string(), content.len() as u64, mtime);
+        let idx = m.add_source(
+            src.to_string_lossy().to_string(),
+            content.len() as u64,
+            mtime,
+        );
         let hash = blake3::hash(content);
-        m.insert_chunk(hash, ChunkRef { path_index: idx, offset: 0, length: content.len() as u32 });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: content.len() as u32,
+            },
+        );
 
         let result = verify_manifest(&m, true);
         assert_eq!(result.chunks_ok, 1);
@@ -138,7 +170,14 @@ mod tests {
         let mut m = Manifest::new();
         let idx = m.add_source(src.to_string_lossy().to_string(), 8, 9999999999);
         let hash = blake3::hash(b"original");
-        m.insert_chunk(hash, ChunkRef { path_index: idx, offset: 0, length: 8 });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 8,
+            },
+        );
 
         let result = verify_manifest(&m, false);
         assert_eq!(result.chunks_stale, 1);
@@ -150,7 +189,14 @@ mod tests {
         let mut m = Manifest::new();
         let idx = m.add_source("/nonexistent/path.bin".into(), 100, 1);
         let hash = blake3::hash(b"x");
-        m.insert_chunk(hash, ChunkRef { path_index: idx, offset: 0, length: 100 });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 100,
+            },
+        );
 
         let result = verify_manifest(&m, false);
         assert_eq!(result.chunks_missing, 1);
@@ -164,13 +210,29 @@ mod tests {
         fs::write(&src, content).unwrap();
 
         let meta = fs::metadata(&src).unwrap();
-        let mtime = meta.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let mut m = Manifest::new();
-        let idx = m.add_source(src.to_string_lossy().to_string(), content.len() as u64, mtime);
+        let idx = m.add_source(
+            src.to_string_lossy().to_string(),
+            content.len() as u64,
+            mtime,
+        );
         // Use a WRONG hash
         let wrong_hash = blake3::hash(b"different data");
-        m.insert_chunk(wrong_hash, ChunkRef { path_index: idx, offset: 0, length: content.len() as u32 });
+        m.insert_chunk(
+            wrong_hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: content.len() as u32,
+            },
+        );
 
         let result = verify_manifest(&m, true);
         assert_eq!(result.chunks_corrupted, 1);

@@ -59,7 +59,9 @@ pub async fn fetch_file(
                 if actual_hash != chunk.hash {
                     anyhow::bail!(
                         "hash mismatch for chunk {}: expected {}, got {}",
-                        i, chunk.hash, actual_hash
+                        i,
+                        chunk.hash,
+                        actual_hash
                     );
                 }
                 store.put(&resp.data)?;

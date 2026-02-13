@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::chunk_store::ChunkStore;
 use crate::Result;
+use crate::chunk_store::ChunkStore;
 
 /// Metadata for a single chunk produced by the chunker.
 #[derive(Debug, Clone)]
@@ -91,7 +91,11 @@ mod tests {
         // 256 KB of data with 8/16/32 KB chunk sizes -> multiple chunks
         let data: Vec<u8> = (0..262_144_u32).map(|i| (i % 256) as u8).collect();
         let result = chunk_data(&data, 8_192, 16_384, 32_768);
-        assert!(result.len() > 1, "expected multiple chunks, got {}", result.len());
+        assert!(
+            result.len() > 1,
+            "expected multiple chunks, got {}",
+            result.len()
+        );
 
         // all chunks should cover the full data without gaps
         let total: u64 = result.iter().map(|c| c.size as u64).sum();

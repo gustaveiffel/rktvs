@@ -97,15 +97,32 @@ fn cross_mode_dedup() {
     // Ingest (copy into store)
     let ingest_result = rk_core::chunker::ingest(content, &store, 512, 1024, 2048).unwrap();
     catalog
-        .record_file("local", "tape-store", "file.txt", 1, content.len() as u64, None, None, 1, &ingest_result.chunks)
+        .record_file(
+            "local",
+            "tape-store",
+            "file.txt",
+            1,
+            content.len() as u64,
+            None,
+            None,
+            1,
+            &ingest_result.chunks,
+        )
         .unwrap();
 
     // Both should produce the same hash
-    let idx_chunks = catalog.get_file_chunks("local", "tape-idx", "file.txt").unwrap();
-    let store_chunks = catalog.get_file_chunks("local", "tape-store", "file.txt").unwrap();
+    let idx_chunks = catalog
+        .get_file_chunks("local", "tape-idx", "file.txt")
+        .unwrap();
+    let store_chunks = catalog
+        .get_file_chunks("local", "tape-store", "file.txt")
+        .unwrap();
     assert_eq!(idx_chunks.len(), store_chunks.len());
     for (ic, sc) in idx_chunks.iter().zip(store_chunks.iter()) {
-        assert_eq!(ic.hash, sc.hash, "hashes should match across index and ingest");
+        assert_eq!(
+            ic.hash, sc.hash,
+            "hashes should match across index and ingest"
+        );
     }
 
     // Resolver should return data (manifest preferred, but store also works)
@@ -130,16 +147,24 @@ fn cross_tape_dedup() {
     let config = small_chunk_config();
 
     // Index into tape1
-    let stats1 = index_directory(&root, &mut manifest, &catalog, "local", "tape1", &config).unwrap();
+    let stats1 =
+        index_directory(&root, &mut manifest, &catalog, "local", "tape1", &config).unwrap();
     let chunks_after_first = manifest.chunks.len();
 
     // Index same dir into tape2
-    let stats2 = index_directory(&root, &mut manifest, &catalog, "local", "tape2", &config).unwrap();
+    let stats2 =
+        index_directory(&root, &mut manifest, &catalog, "local", "tape2", &config).unwrap();
     let chunks_after_second = manifest.chunks.len();
 
     // Same chunks — count should not increase
-    assert_eq!(chunks_after_first, chunks_after_second, "cross-tape dedup should share chunks");
-    assert_eq!(stats1.chunks_new, stats2.chunks_dedup, "second index should dedup all");
+    assert_eq!(
+        chunks_after_first, chunks_after_second,
+        "cross-tape dedup should share chunks"
+    );
+    assert_eq!(
+        stats1.chunks_new, stats2.chunks_dedup,
+        "second index should dedup all"
+    );
 }
 
 /// Test 4: Index files, estimate → all chunks local, zero transfer.
@@ -158,10 +183,14 @@ fn estimate_with_manifest() {
     index_directory(&root, &mut manifest, &catalog, "local", "t", &config).unwrap();
 
     let resolver = ChunkResolver::new(Some(&manifest), &empty_store);
-    let est = rk_scheduler::estimate::estimate_file(&catalog, &resolver, "local", "t", "local.bin").unwrap();
+    let est = rk_scheduler::estimate::estimate_file(&catalog, &resolver, "local", "t", "local.bin")
+        .unwrap();
 
     assert!(est.total_chunks > 0);
-    assert_eq!(est.local_chunks, est.total_chunks, "all chunks should be local via manifest");
+    assert_eq!(
+        est.local_chunks, est.total_chunks,
+        "all chunks should be local via manifest"
+    );
     assert_eq!(est.missing_chunks, 0);
     assert_eq!(est.transfer_bytes, 0);
 }
@@ -182,7 +211,11 @@ fn stale_detection_e2e() {
     index_directory(&root, &mut manifest, &catalog, "local", "t", &config).unwrap();
 
     // Modify the source file (changes mtime + size)
-    fs::write(root.join("mutable.txt"), b"CHANGED content, different size!!").unwrap();
+    fs::write(
+        root.join("mutable.txt"),
+        b"CHANGED content, different size!!",
+    )
+    .unwrap();
 
     // Export should fail with stale error
     let resolver = ChunkResolver::new(Some(&manifest), &store);
@@ -190,7 +223,10 @@ fn stale_detection_e2e() {
     let result = rk_tar::export::export_tar(&mut buf, &resolver, &catalog, "local", "t", "/");
     assert!(result.is_err(), "export should fail on stale source");
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("stale source file"), "error should mention staleness: {err}");
+    assert!(
+        err.contains("stale source file"),
+        "error should mention staleness: {err}"
+    );
 }
 
 /// Test 6: Verify manifest integrity (stat-only and blake3 modes).
@@ -242,6 +278,9 @@ fn manifest_file_roundtrip() {
 
     // All chunks from original should be found in loaded
     for hash in manifest.chunks.keys() {
-        assert!(loaded.has_chunk(hash), "loaded manifest missing chunk {hash}");
+        assert!(
+            loaded.has_chunk(hash),
+            "loaded manifest missing chunk {hash}"
+        );
     }
 }

@@ -8,7 +8,8 @@ use std::sync::Arc;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
 /// Generate a self-signed certificate for localhost (development/testing).
-pub fn generate_self_signed() -> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>), rcgen::Error> {
+pub fn generate_self_signed()
+-> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>), rcgen::Error> {
     generate_self_signed_for(vec!["localhost".to_string()])
 }
 
@@ -108,10 +109,8 @@ mod tests {
 
     #[test]
     fn generate_with_custom_sans() {
-        let (cert, key) = generate_self_signed_for(vec![
-            "localhost".into(),
-            "127.0.0.1".into(),
-        ]).unwrap();
+        let (cert, key) =
+            generate_self_signed_for(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
         // Should produce a valid cert+key that builds configs
         let _sc = server_config(cert.clone(), key).unwrap();
         let _cc = client_config(&cert).unwrap();

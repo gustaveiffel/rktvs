@@ -90,13 +90,25 @@ pub fn decide(grade: Grade, cost: CostTier) -> Decision {
     match grade {
         Grade::Urgent => Decision::Run,
         Grade::Normal => {
-            if cost <= CostTier::Metered { Decision::Run } else { Decision::Queue }
+            if cost <= CostTier::Metered {
+                Decision::Run
+            } else {
+                Decision::Queue
+            }
         }
         Grade::Batch => {
-            if cost <= CostTier::Cheap { Decision::Run } else { Decision::Queue }
+            if cost <= CostTier::Cheap {
+                Decision::Run
+            } else {
+                Decision::Queue
+            }
         }
         Grade::Background => {
-            if cost == CostTier::Free { Decision::Run } else { Decision::Queue }
+            if cost == CostTier::Free {
+                Decision::Run
+            } else {
+                Decision::Queue
+            }
         }
     }
 }
@@ -131,8 +143,14 @@ mod tests {
     fn background_runs_only_if_free() {
         assert_eq!(decide(Grade::Background, CostTier::Free), Decision::Run);
         assert_eq!(decide(Grade::Background, CostTier::Cheap), Decision::Queue);
-        assert_eq!(decide(Grade::Background, CostTier::Metered), Decision::Queue);
-        assert_eq!(decide(Grade::Background, CostTier::Expensive), Decision::Queue);
+        assert_eq!(
+            decide(Grade::Background, CostTier::Metered),
+            Decision::Queue
+        );
+        assert_eq!(
+            decide(Grade::Background, CostTier::Expensive),
+            Decision::Queue
+        );
     }
 
     #[test]
@@ -147,7 +165,10 @@ mod tests {
     #[test]
     fn cost_tier_from_str() {
         assert_eq!("free".parse::<CostTier>().unwrap(), CostTier::Free);
-        assert_eq!("Expensive".parse::<CostTier>().unwrap(), CostTier::Expensive);
+        assert_eq!(
+            "Expensive".parse::<CostTier>().unwrap(),
+            CostTier::Expensive
+        );
         assert!("invalid".parse::<CostTier>().is_err());
     }
 }

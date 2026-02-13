@@ -15,12 +15,15 @@ use rk_core::indexer::IndexConfig;
 use rk_core::manifest::Manifest;
 use rk_core::resolver::ChunkResolver;
 use rk_core::verifier;
-use rk_tar::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
 use rk_tar::export;
+use rk_tar::ingest::{self, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use rk_transport::cert;
 
 #[derive(Parser)]
-#[command(name = "rk", about = "Content-addressed file delivery over hostile networks")]
+#[command(
+    name = "rk",
+    about = "Content-addressed file delivery over hostile networks"
+)]
 struct Cli {
     /// Data directory for chunk store and catalog
     #[arg(long, env = "RK_DATA_DIR", default_value = "~/.rk")]
@@ -184,7 +187,10 @@ fn validate_library_id(id: &str) -> Result<()> {
     if id.is_empty() {
         bail!("library ID cannot be empty");
     }
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         bail!(
             "invalid library ID '{id}': only alphanumeric characters, hyphens, \
              and underscores are allowed"
@@ -195,9 +201,9 @@ fn validate_library_id(id: &str) -> Result<()> {
 
 /// Parse "<library>:<tape>/<path>" into (library, tape, file_path).
 fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
-    let (library, rest) = input
-        .split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("expected format <library>:<tape>/<path>, got '{}'", input))?;
+    let (library, rest) = input.split_once(':').ok_or_else(|| {
+        anyhow::anyhow!("expected format <library>:<tape>/<path>, got '{}'", input)
+    })?;
     if library.is_empty() {
         bail!("library name cannot be empty in '{}'", input);
     }
@@ -261,7 +267,8 @@ fn resolve_cert_path(data_dir: &Path, rel: &str) -> PathBuf {
 /// Extract server_name for TLS SNI from an endpoint string.
 /// For IP-based endpoints, returns the IP as a string.
 fn extract_hostname(endpoint: &str) -> Result<String> {
-    let addr: SocketAddr = endpoint.parse()
+    let addr: SocketAddr = endpoint
+        .parse()
         .with_context(|| format!("invalid endpoint: {endpoint}"))?;
     Ok(addr.ip().to_string())
 }
@@ -273,24 +280,33 @@ async fn connect_to_library(
     library_id: &str,
     satellite_id: &str,
 ) -> Result<(rk_transport::satellite::Satellite, LibraryRecord)> {
-    let lib = catalog.get_library(library_id)?
+    let lib = catalog
+        .get_library(library_id)?
         .ok_or_else(|| anyhow::anyhow!("unknown library '{library_id}'"))?;
-    let cert_rel = lib.cert_path.as_deref()
+    let cert_rel = lib
+        .cert_path
+        .as_deref()
         .ok_or_else(|| anyhow::anyhow!("no cert path for library '{library_id}'"))?;
     let cert_abs = resolve_cert_path(data_dir, cert_rel);
 
-    let hub_cert = cert::load_cert(&cert_abs)
-        .with_context(|| format!("loading cert for '{library_id}'"))?;
-    let client_config = cert::client_config(&hub_cert)
-        .context("building TLS client config")?;
+    let hub_cert =
+        cert::load_cert(&cert_abs).with_context(|| format!("loading cert for '{library_id}'"))?;
+    let client_config = cert::client_config(&hub_cert).context("building TLS client config")?;
 
-    let addr: SocketAddr = lib.endpoint.parse()
+    let addr: SocketAddr = lib
+        .endpoint
+        .parse()
         .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
     let server_name = extract_hostname(&lib.endpoint)?;
 
     let satellite = tokio::time::timeout(
         Duration::from_secs(10),
-        rk_transport::satellite::Satellite::connect(addr, &server_name, client_config, satellite_id),
+        rk_transport::satellite::Satellite::connect(
+            addr,
+            &server_name,
+            client_config,
+            satellite_id,
+        ),
     )
     .await
     .map_err(|_| anyhow::anyhow!("connection timed out after 10s"))?
@@ -303,16 +319,20 @@ async fn connect_to_library(
 async fn main() -> Result<()> {
     // User-friendly panic messages instead of raw stack traces
     std::panic::set_hook(Box::new(|info| {
-        let payload = info.payload()
+        let payload = info
+            .payload()
             .downcast_ref::<&str>()
             .copied()
             .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
             .unwrap_or("unknown error");
-        let location = info.location()
+        let location = info
+            .location()
             .map(|l| format!(" at {}:{}", l.file(), l.line()))
             .unwrap_or_default();
         eprintln!("rk: internal error: {payload}{location}");
-        eprintln!("this is a bug — please report it at https://github.com/rktvs/rk/issues");
+        eprintln!(
+            "this is a bug — please report it at https://github.com/gustaveiffel/rktvs/issues"
+        );
     }));
 
     tracing_subscriber::fmt::init();
@@ -322,18 +342,18 @@ async fn main() -> Result<()> {
             "{} (protocol v{})",
             env!("CARGO_PKG_VERSION"),
             rk_transport::satellite::PROTOCOL_VERSION,
-        ).into_boxed_str()
+        )
+        .into_boxed_str(),
     );
-    let cli = Cli::from_arg_matches(
-        &Cli::command().version(version).get_matches(),
-    ).context("parsing arguments")?;
+    let cli = Cli::from_arg_matches(&Cli::command().version(version).get_matches())
+        .context("parsing arguments")?;
     let data_dir = resolve_data_dir(&cli.data_dir);
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating data directory: {}", data_dir.display()))?;
 
     let store = ChunkStore::new(data_dir.clone());
-    let catalog = Catalog::open(data_dir.join("catalog.db").as_path())
-        .context("opening catalog")?;
+    let catalog =
+        Catalog::open(data_dir.join("catalog.db").as_path()).context("opening catalog")?;
 
     // Load manifest if it exists
     let manifest_path = data_dir.join("manifest.rkm");
@@ -422,7 +442,9 @@ async fn main() -> Result<()> {
                     };
                     println!(
                         "{} {} {} {} [{}] {}",
-                        j.job_id, j.status, j.job_type,
+                        j.job_id,
+                        j.status,
+                        j.job_type,
                         j.file_path.as_deref().unwrap_or("-"),
                         progress,
                         rk_scheduler::types::Grade::from_i32(j.grade)
@@ -439,15 +461,18 @@ async fn main() -> Result<()> {
             }
             let mut m = manifest.take().unwrap_or_default();
             let config = IndexConfig::default();
-            let stats = rk_core::indexer::index_directory(
-                &dir, &mut m, &catalog, "local", &tape, &config,
-            )
-            .context("indexing directory")?;
-            m.write_to_file(&manifest_path).context("writing manifest")?;
+            let stats =
+                rk_core::indexer::index_directory(&dir, &mut m, &catalog, "local", &tape, &config)
+                    .context("indexing directory")?;
+            m.write_to_file(&manifest_path)
+                .context("writing manifest")?;
             eprintln!(
                 "indexed {} files, {} dirs, {} chunks ({} new, {} dedup), {} bytes",
-                stats.files_indexed, stats.dirs_found,
-                stats.chunks_total, stats.chunks_new, stats.chunks_dedup,
+                stats.files_indexed,
+                stats.dirs_found,
+                stats.chunks_total,
+                stats.chunks_new,
+                stats.chunks_dedup,
                 stats.total_bytes
             );
         }
@@ -464,15 +489,19 @@ async fn main() -> Result<()> {
             if result.chunks_stale > 0 || result.chunks_missing > 0 || result.chunks_corrupted > 0 {
                 bail!(
                     "verification failed: {} stale, {} missing, {} corrupted",
-                    result.chunks_stale, result.chunks_missing, result.chunks_corrupted
+                    result.chunks_stale,
+                    result.chunks_missing,
+                    result.chunks_corrupted
                 );
             }
         }
 
         // ── Hub commands ────────────────────────────────────
-
         Commands::Hub { command } => match command {
-            HubCommands::Init { listen, sans: extra_sans } => {
+            HubCommands::Init {
+                listen,
+                sans: extra_sans,
+            } => {
                 let cert_path = data_dir.join("hub.cert.der");
                 let key_path = data_dir.join("hub.key.der");
 
@@ -489,7 +518,9 @@ async fn main() -> Result<()> {
                 // plus any extra SANs from --san flags.
                 let mut sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
                 if let Some(host) = listen.split(':').next()
-                    && host != "0.0.0.0" && host != "::" && !sans.contains(&host.to_string())
+                    && host != "0.0.0.0"
+                    && host != "::"
+                    && !sans.contains(&host.to_string())
                 {
                     sans.push(host.to_string());
                 }
@@ -502,10 +533,8 @@ async fn main() -> Result<()> {
                 let (hub_cert, hub_key) = cert::generate_self_signed_for(sans.clone())
                     .context("generating self-signed certificate")?;
 
-                cert::save_cert(&hub_cert, &cert_path)
-                    .context("saving certificate")?;
-                cert::save_key(&hub_key, &key_path)
-                    .context("saving private key")?;
+                cert::save_cert(&hub_cert, &cert_path).context("saving certificate")?;
+                cert::save_key(&hub_key, &key_path).context("saving private key")?;
 
                 let fingerprint = blake3::hash(hub_cert.as_ref());
                 eprintln!("hub initialized");
@@ -529,14 +558,13 @@ async fn main() -> Result<()> {
                     );
                 }
 
-                let hub_cert = cert::load_cert(&cert_path)
-                    .context("loading certificate")?;
-                let hub_key = cert::load_key(&key_path)
-                    .context("loading private key")?;
-                let server_config = cert::server_config(hub_cert, hub_key)
-                    .context("building TLS config")?;
+                let hub_cert = cert::load_cert(&cert_path).context("loading certificate")?;
+                let hub_key = cert::load_key(&key_path).context("loading private key")?;
+                let server_config =
+                    cert::server_config(hub_cert, hub_key).context("building TLS config")?;
 
-                let addr: SocketAddr = listen.parse()
+                let addr: SocketAddr = listen
+                    .parse()
                     .with_context(|| format!("invalid listen address: {listen}"))?;
 
                 let store = Arc::new(store);
@@ -545,184 +573,210 @@ async fn main() -> Result<()> {
                 // Open a second Catalog handle for the hub (SQLite WAL allows concurrent readers)
                 let hub_catalog = Arc::new(std::sync::Mutex::new(
                     Catalog::open(data_dir.join("catalog.db").as_path())
-                        .context("opening hub catalog")?
+                        .context("opening hub catalog")?,
                 ));
 
-                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest, Some(hub_catalog))
-                    .await
-                    .context("binding hub server")?;
+                let hub = rk_transport::hub::Hub::bind(
+                    addr,
+                    server_config,
+                    store,
+                    manifest,
+                    Some(hub_catalog),
+                )
+                .await
+                .context("binding hub server")?;
 
-                eprintln!("rk hub v{} listening on {}", env!("CARGO_PKG_VERSION"), hub.local_addr());
+                eprintln!(
+                    "rk hub v{} listening on {}",
+                    env!("CARGO_PKG_VERSION"),
+                    hub.local_addr()
+                );
                 hub.run().await;
             }
         },
 
         // ── Library commands ────────────────────────────────
+        Commands::Library { command } => {
+            match command {
+                LibraryCommands::Add {
+                    id,
+                    endpoint,
+                    cert: cert_file,
+                    force,
+                } => {
+                    validate_library_id(&id)?;
 
-        Commands::Library { command } => match command {
-            LibraryCommands::Add { id, endpoint, cert: cert_file, force } => {
-                validate_library_id(&id)?;
-
-                // Validate endpoint format early
-                let _: SocketAddr = endpoint.parse()
+                    // Validate endpoint format early
+                    let _: SocketAddr = endpoint.parse()
                     .with_context(|| format!("invalid endpoint '{endpoint}': expected host:port (e.g. 127.0.0.1:4443)"))?;
 
-                let src = PathBuf::from(&cert_file);
-                if !src.exists() {
-                    bail!("certificate file not found: {}", cert_file);
+                    let src = PathBuf::from(&cert_file);
+                    if !src.exists() {
+                        bail!("certificate file not found: {}", cert_file);
+                    }
+
+                    // Check for existing library before touching anything
+                    let exists = catalog.get_library(&id)?.is_some();
+                    if exists && !force {
+                        bail!("library '{id}' already exists. Use --force to replace it.");
+                    }
+                    if exists {
+                        catalog.remove_library(&id)?;
+                        let old_cert = data_dir.join("certs").join(format!("{id}.cert.der"));
+                        if old_cert.exists() {
+                            std::fs::remove_file(&old_cert)?;
+                        }
+                    }
+
+                    // Copy cert into data-dir/certs/<id>.cert.der
+                    let certs_dir = data_dir.join("certs");
+                    std::fs::create_dir_all(&certs_dir)?;
+                    let dest = certs_dir.join(format!("{id}.cert.der"));
+                    std::fs::copy(&src, &dest)
+                        .with_context(|| format!("copying cert to {}", dest.display()))?;
+
+                    // Store relative cert path (portable across data-dir moves)
+                    let rel_cert = format!("certs/{id}.cert.der");
+                    catalog
+                        .add_library(&id, &id, &endpoint, &rel_cert)
+                        .context("adding library")?;
+
+                    if exists {
+                        eprintln!("replaced library '{id}' at {endpoint}");
+                    } else {
+                        eprintln!("added library '{id}' at {endpoint}");
+                    }
+                    eprintln!("  cert: {rel_cert}");
                 }
 
-                // Check for existing library before touching anything
-                let exists = catalog.get_library(&id)?.is_some();
-                if exists && !force {
-                    bail!(
-                        "library '{id}' already exists. Use --force to replace it."
+                LibraryCommands::List => {
+                    let libs = catalog.list_libraries()?;
+                    if libs.is_empty() {
+                        eprintln!("no libraries registered");
+                    } else {
+                        for lib in &libs {
+                            let seen = lib
+                                .last_seen
+                                .map(|ts| ts.to_string())
+                                .unwrap_or_else(|| "never".into());
+                            println!(
+                                "{:<16} {:<24} {:<10} last_seen={}",
+                                lib.library_id, lib.endpoint, lib.status, seen
+                            );
+                        }
+                    }
+                }
+
+                LibraryCommands::Remove { id } => {
+                    validate_library_id(&id)?;
+                    catalog.remove_library(&id)?;
+                    // Remove stored cert if present
+                    let cert_file = data_dir.join("certs").join(format!("{id}.cert.der"));
+                    if cert_file.exists() {
+                        std::fs::remove_file(&cert_file)?;
+                    }
+                    eprintln!("removed library '{id}'");
+                }
+
+                LibraryCommands::Ping { id } => {
+                    let start = Instant::now();
+                    match connect_to_library(&catalog, &data_dir, &id, "rk-ping").await {
+                        Ok((_sat, _lib)) => {
+                            let elapsed = start.elapsed();
+                            catalog.update_library_status(&id, "online")?;
+                            eprintln!("ok ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
+                        }
+                        Err(e) => {
+                            catalog.update_library_status(&id, "offline")?;
+                            bail!("ping failed: {e:#}");
+                        }
+                    }
+                }
+
+                LibraryCommands::Sync { id, tape } => {
+                    validate_library_id(&id)?;
+                    let start = Instant::now();
+
+                    let (satellite, _lib) = connect_to_library(&catalog, &data_dir, &id, "rk-sync")
+                        .await
+                        .context("connecting for catalog sync")?;
+
+                    // Determine which tapes to sync
+                    let tapes_to_sync: Vec<String> = if let Some(ref t) = tape {
+                        vec![t.clone()]
+                    } else {
+                        // List tapes first
+                        let (tape_list, _) =
+                            satellite.sync_catalog("").await.context("listing tapes")?;
+                        if tape_list.is_empty() {
+                            eprintln!("no tapes found on '{id}'");
+                            return Ok(());
+                        }
+                        for (name, files, size) in &tape_list {
+                            eprintln!("  {name}: {files} files, {size} bytes");
+                        }
+                        tape_list.into_iter().map(|(name, _, _)| name).collect()
+                    };
+
+                    let mut total_files = 0u64;
+                    let mut total_chunks = 0u64;
+
+                    for tape_name in &tapes_to_sync {
+                        eprintln!("syncing {id}:{tape_name}/ ...");
+                        let (_, files) = satellite
+                            .sync_catalog(tape_name)
+                            .await
+                            .with_context(|| format!("syncing tape '{tape_name}'"))?;
+
+                        for file in &files {
+                            let chunks: Vec<rk_core::chunker::ChunkMeta> = file
+                                .chunks
+                                .iter()
+                                .map(|c| rk_core::chunker::ChunkMeta {
+                                    hash: c.hash,
+                                    offset: c.offset,
+                                    size: c.size as usize,
+                                    compressed_size: 0,
+                                })
+                                .collect();
+
+                            catalog
+                                .record_file(
+                                    &id,
+                                    tape_name,
+                                    &file.path,
+                                    file.entry_type,
+                                    file.size,
+                                    if file.mtime > 0 {
+                                        Some(file.mtime)
+                                    } else {
+                                        None
+                                    },
+                                    if file.mode > 0 { Some(file.mode) } else { None },
+                                    file.version,
+                                    &chunks,
+                                )
+                                .with_context(|| format!("recording file '{}'", file.path))?;
+
+                            total_chunks += chunks.len() as u64;
+                        }
+                        total_files += files.len() as u64;
+                    }
+
+                    catalog.update_library_status(&id, "online")?;
+                    let elapsed = start.elapsed();
+                    eprintln!(
+                        "synced {} tapes, {} files, {} chunks ({:.1}ms)",
+                        tapes_to_sync.len(),
+                        total_files,
+                        total_chunks,
+                        elapsed.as_secs_f64() * 1000.0,
                     );
                 }
-                if exists {
-                    catalog.remove_library(&id)?;
-                    let old_cert = data_dir.join("certs").join(format!("{id}.cert.der"));
-                    if old_cert.exists() {
-                        std::fs::remove_file(&old_cert)?;
-                    }
-                }
-
-                // Copy cert into data-dir/certs/<id>.cert.der
-                let certs_dir = data_dir.join("certs");
-                std::fs::create_dir_all(&certs_dir)?;
-                let dest = certs_dir.join(format!("{id}.cert.der"));
-                std::fs::copy(&src, &dest)
-                    .with_context(|| format!("copying cert to {}", dest.display()))?;
-
-                // Store relative cert path (portable across data-dir moves)
-                let rel_cert = format!("certs/{id}.cert.der");
-                catalog.add_library(&id, &id, &endpoint, &rel_cert)
-                    .context("adding library")?;
-
-                if exists {
-                    eprintln!("replaced library '{id}' at {endpoint}");
-                } else {
-                    eprintln!("added library '{id}' at {endpoint}");
-                }
-                eprintln!("  cert: {rel_cert}");
             }
-
-            LibraryCommands::List => {
-                let libs = catalog.list_libraries()?;
-                if libs.is_empty() {
-                    eprintln!("no libraries registered");
-                } else {
-                    for lib in &libs {
-                        let seen = lib.last_seen
-                            .map(|ts| ts.to_string())
-                            .unwrap_or_else(|| "never".into());
-                        println!(
-                            "{:<16} {:<24} {:<10} last_seen={}",
-                            lib.library_id, lib.endpoint, lib.status, seen
-                        );
-                    }
-                }
-            }
-
-            LibraryCommands::Remove { id } => {
-                validate_library_id(&id)?;
-                catalog.remove_library(&id)?;
-                // Remove stored cert if present
-                let cert_file = data_dir.join("certs").join(format!("{id}.cert.der"));
-                if cert_file.exists() {
-                    std::fs::remove_file(&cert_file)?;
-                }
-                eprintln!("removed library '{id}'");
-            }
-
-            LibraryCommands::Ping { id } => {
-                let start = Instant::now();
-                match connect_to_library(&catalog, &data_dir, &id, "rk-ping").await {
-                    Ok((_sat, _lib)) => {
-                        let elapsed = start.elapsed();
-                        catalog.update_library_status(&id, "online")?;
-                        eprintln!("ok ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
-                    }
-                    Err(e) => {
-                        catalog.update_library_status(&id, "offline")?;
-                        bail!("ping failed: {e:#}");
-                    }
-                }
-            }
-
-            LibraryCommands::Sync { id, tape } => {
-                validate_library_id(&id)?;
-                let start = Instant::now();
-
-                let (satellite, _lib) = connect_to_library(&catalog, &data_dir, &id, "rk-sync")
-                    .await
-                    .context("connecting for catalog sync")?;
-
-                // Determine which tapes to sync
-                let tapes_to_sync: Vec<String> = if let Some(ref t) = tape {
-                    vec![t.clone()]
-                } else {
-                    // List tapes first
-                    let (tape_list, _) = satellite.sync_catalog("").await
-                        .context("listing tapes")?;
-                    if tape_list.is_empty() {
-                        eprintln!("no tapes found on '{id}'");
-                        return Ok(());
-                    }
-                    for (name, files, size) in &tape_list {
-                        eprintln!("  {name}: {files} files, {size} bytes");
-                    }
-                    tape_list.into_iter().map(|(name, _, _)| name).collect()
-                };
-
-                let mut total_files = 0u64;
-                let mut total_chunks = 0u64;
-
-                for tape_name in &tapes_to_sync {
-                    eprintln!("syncing {id}:{tape_name}/ ...");
-                    let (_, files) = satellite.sync_catalog(tape_name).await
-                        .with_context(|| format!("syncing tape '{tape_name}'"))?;
-
-                    for file in &files {
-                        let chunks: Vec<rk_core::chunker::ChunkMeta> = file.chunks
-                            .iter()
-                            .map(|c| rk_core::chunker::ChunkMeta {
-                                hash: c.hash,
-                                offset: c.offset,
-                                size: c.size as usize,
-                                compressed_size: 0,
-                            })
-                            .collect();
-
-                        catalog.record_file(
-                            &id,
-                            tape_name,
-                            &file.path,
-                            file.entry_type,
-                            file.size,
-                            if file.mtime > 0 { Some(file.mtime) } else { None },
-                            if file.mode > 0 { Some(file.mode) } else { None },
-                            file.version,
-                            &chunks,
-                        ).with_context(|| format!("recording file '{}'", file.path))?;
-
-                        total_chunks += chunks.len() as u64;
-                    }
-                    total_files += files.len() as u64;
-                }
-
-                catalog.update_library_status(&id, "online")?;
-                let elapsed = start.elapsed();
-                eprintln!(
-                    "synced {} tapes, {} files, {} chunks ({:.1}ms)",
-                    tapes_to_sync.len(), total_files, total_chunks,
-                    elapsed.as_secs_f64() * 1000.0,
-                );
-            }
-        },
+        }
 
         // ── Fetch command ───────────────────────────────────
-
         Commands::Fetch { path, grade } => {
             let (library_id, tape, file_path) = parse_library_tape_path(&path)?;
 
@@ -730,7 +784,7 @@ async fn main() -> Result<()> {
             let grade_val = match grade.to_lowercase().as_str() {
                 "urgent" | "p0" => 0,
                 "normal" | "p1" => 1,
-                "batch"  | "p2" => 2,
+                "batch" | "p2" => 2,
                 "background" | "p3" => 3,
                 _ => bail!("unknown grade '{grade}'. Use: urgent, normal, batch, background"),
             };
@@ -766,7 +820,8 @@ async fn main() -> Result<()> {
             };
 
             // Connect once, fetch all matching files
-            let (satellite, _lib) = connect_to_library(&catalog, &data_dir, library_id, "rk-fetch").await?;
+            let (satellite, _lib) =
+                connect_to_library(&catalog, &data_dir, library_id, "rk-fetch").await?;
 
             let mut total_fetched = 0u64;
             let mut total_skipped = 0u64;
@@ -780,7 +835,10 @@ async fn main() -> Result<()> {
                 }
 
                 let fetch_path = format!("{library_id}:{tape}/{fp}");
-                let job_id = format!("fetch-{}", &blake3::hash(fetch_path.as_bytes()).to_hex()[..12]);
+                let job_id = format!(
+                    "fetch-{}",
+                    &blake3::hash(fetch_path.as_bytes()).to_hex()[..12]
+                );
                 let total_bytes: u64 = chunks.iter().map(|c| c.size as u64).sum();
 
                 if let Some(existing) = catalog.get_job(&job_id)? {
@@ -792,14 +850,22 @@ async fn main() -> Result<()> {
                     eprintln!("resuming {fp} (was {})", existing.status);
                 } else {
                     catalog.create_job(
-                        &job_id, library_id, tape, "fetch", grade_val,
+                        &job_id,
+                        library_id,
+                        tape,
+                        "fetch",
+                        grade_val,
                         Some(fp.as_str()),
                         Some(chunks.len() as i64),
                         Some(total_bytes as i64),
                     )?;
                 }
 
-                eprintln!("fetching {fp} ({} chunks, {} bytes)", chunks.len(), total_bytes);
+                eprintln!(
+                    "fetching {fp} ({} chunks, {} bytes)",
+                    chunks.len(),
+                    total_bytes
+                );
                 catalog.update_job_progress(&job_id, 0, "running")?;
 
                 let mut file_ok = true;
@@ -822,15 +888,23 @@ async fn main() -> Result<()> {
                         Some(resp) => {
                             total_bytes_transferred += resp.data.len() as u64;
                             if resp.compressed {
-                                store.put_compressed(&chunk.hash, &resp.data)
+                                store
+                                    .put_compressed(&chunk.hash, &resp.data)
                                     .context("storing compressed chunk")?;
                             } else {
-                                let stored_hash = store.put(&resp.data).context("storing fetched chunk")?;
+                                let stored_hash =
+                                    store.put(&resp.data).context("storing fetched chunk")?;
                                 if stored_hash != chunk.hash {
-                                    catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                                    catalog.update_job_progress(
+                                        &job_id,
+                                        (i + 1) as i64,
+                                        "error",
+                                    )?;
                                     eprintln!(
                                         "error: hash mismatch for chunk {} in {fp}: expected {}, got {}",
-                                        i, chunk.hash.to_hex(), stored_hash.to_hex()
+                                        i,
+                                        chunk.hash.to_hex(),
+                                        stored_hash.to_hex()
                                     );
                                     file_ok = false;
                                     break;
@@ -840,7 +914,10 @@ async fn main() -> Result<()> {
                         }
                         None => {
                             catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
-                            eprintln!("error: chunk {} not found on hub for {fp}", chunk.hash.to_hex());
+                            eprintln!(
+                                "error: chunk {} not found on hub for {fp}",
+                                chunk.hash.to_hex()
+                            );
                             file_ok = false;
                             break;
                         }
@@ -856,7 +933,10 @@ async fn main() -> Result<()> {
 
             eprintln!(
                 "done: {} fetched, {} skipped, {} bytes transferred ({} files)",
-                total_fetched, total_skipped, total_bytes_transferred, file_paths.len()
+                total_fetched,
+                total_skipped,
+                total_bytes_transferred,
+                file_paths.len()
             );
         }
     }

@@ -1,5 +1,8 @@
 # rk (rktvs)
 
+[![CI](https://github.com/gustaveiffel/rktvs/actions/workflows/ci.yml/badge.svg)](https://github.com/gustaveiffel/rktvs/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+
 **Radio Kills The Video Star** -- Content-addressed file delivery for hostile networks.
 
 ## The Problem
@@ -26,7 +29,7 @@ Inspired by UUCP (1978): store-and-forward semantics, priority grades, cost-awar
 Requires Rust 1.85+ (edition 2024) and a C compiler (for SQLite).
 
 ```bash
-git clone https://github.com/rktvs/rk.git
+git clone https://github.com/gustaveiffel/rktvs.git
 cd rk
 cargo build --release
 ```

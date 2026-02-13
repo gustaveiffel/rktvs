@@ -22,7 +22,9 @@ pub enum Error {
     #[error("manifest format error: {0}")]
     ManifestFormat(String),
 
-    #[error("stale source file: {path} (expected mtime={expected_mtime} size={expected_size}, got mtime={actual_mtime} size={actual_size})")]
+    #[error(
+        "stale source file: {path} (expected mtime={expected_mtime} size={expected_size}, got mtime={actual_mtime} size={actual_size})"
+    )]
     StaleSourceFile {
         path: String,
         expected_mtime: u64,

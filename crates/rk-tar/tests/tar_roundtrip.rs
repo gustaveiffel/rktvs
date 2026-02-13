@@ -6,16 +6,26 @@ use std::io::Read;
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_core::resolver::ChunkResolver;
-use rk_tar::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
 use rk_tar::export;
+use rk_tar::ingest::{self, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 
 /// Build a tar archive with multiple files of various sizes.
 fn make_test_tar() -> (Vec<u8>, Vec<(&'static str, Vec<u8>, u32, u64)>) {
     let entries: Vec<(&str, Vec<u8>, u32, u64)> = vec![
         ("small.txt", b"hello world".to_vec(), 0o644, 1700000000),
-        ("medium.bin", (0..50_000u32).map(|i| (i % 251) as u8).collect(), 0o600, 1700000100),
+        (
+            "medium.bin",
+            (0..50_000u32).map(|i| (i % 251) as u8).collect(),
+            0o600,
+            1700000100,
+        ),
         ("empty.dat", Vec::new(), 0o444, 1700000200),
-        ("subdir/nested.txt", b"nested file content here".to_vec(), 0o755, 1700000300),
+        (
+            "subdir/nested.txt",
+            b"nested file content here".to_vec(),
+            0o755,
+            1700000300,
+        ),
     ];
 
     let mut buf = Vec::new();
@@ -61,7 +71,15 @@ fn tar_roundtrip_preserves_content_and_metadata() {
     // Export
     let mut exported = Vec::new();
     let resolver = ChunkResolver::new(None, &store);
-    export::export_tar(&mut exported, &resolver, &catalog, "local", "roundtrip", "/").unwrap();
+    export::export_tar(
+        &mut exported,
+        &resolver,
+        &catalog,
+        "local",
+        "roundtrip",
+        "/",
+    )
+    .unwrap();
 
     // Parse exported tar and compare with originals
     let mut archive = tar::Archive::new(Cursor::new(&exported));
@@ -84,8 +102,10 @@ fn tar_roundtrip_preserves_content_and_metadata() {
     let mut sorted_originals = original_entries.clone();
     sorted_originals.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for ((exp_path, exp_data, exp_mode, exp_mtime), (orig_path, orig_data, orig_mode, orig_mtime)) in
-        exported_entries.iter().zip(sorted_originals.iter())
+    for (
+        (exp_path, exp_data, exp_mode, exp_mtime),
+        (orig_path, orig_data, orig_mode, orig_mtime),
+    ) in exported_entries.iter().zip(sorted_originals.iter())
     {
         assert_eq!(exp_path, *orig_path, "path mismatch");
         assert_eq!(exp_data, orig_data, "data mismatch for {}", orig_path);

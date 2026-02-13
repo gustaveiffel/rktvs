@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use std::path::Path;
 use rusqlite::Connection;
+use std::path::Path;
 
 use crate::Result;
 
@@ -196,7 +196,7 @@ impl Catalog {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;"
+             PRAGMA busy_timeout = 5000;",
         )?;
         self.conn.execute_batch(SCHEMA)?;
         self.migrate()?;
@@ -207,24 +207,27 @@ impl Catalog {
     fn migrate(&self) -> Result<()> {
         // Migration 1: add cert_path column (v0.1 → v0.2).
         // Ignore error if column already exists (fresh databases).
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE libraries ADD COLUMN cert_path TEXT;"
-        );
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE libraries ADD COLUMN cert_path TEXT;");
         // Migrate data stashed in trust_level by the v0.1 MVP hack.
         self.conn.execute_batch(
             "UPDATE libraries SET cert_path = trust_level
-             WHERE trust_level != 'full' AND cert_path IS NULL;"
+             WHERE trust_level != 'full' AND cert_path IS NULL;",
         )?;
 
         // Migration 2: relax wg_pubkey NOT NULL → nullable.
         // Old schema had `wg_pubkey BLOB NOT NULL` but we don't use WireGuard
         // yet. CREATE TABLE IF NOT EXISTS won't update existing constraints,
         // so we must recreate the table.
-        let has_notnull: bool = self.conn.query_row(
-            "SELECT \"notnull\" FROM pragma_table_info('libraries') WHERE name = 'wg_pubkey'",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let has_notnull: bool = self
+            .conn
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('libraries') WHERE name = 'wg_pubkey'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if has_notnull {
             self.conn.execute_batch(
@@ -241,7 +244,7 @@ impl Catalog {
                 );
                 INSERT INTO libraries_new SELECT * FROM libraries;
                 DROP TABLE libraries;
-                ALTER TABLE libraries_new RENAME TO libraries;"
+                ALTER TABLE libraries_new RENAME TO libraries;",
             )?;
         }
 
@@ -321,12 +324,30 @@ impl Catalog {
     /// Remove a library and all its associated data (cascade delete).
     pub fn remove_library(&self, library_id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM file_chunks WHERE library_id = ?1", rusqlite::params![library_id])?;
-        tx.execute("DELETE FROM files WHERE library_id = ?1", rusqlite::params![library_id])?;
-        tx.execute("DELETE FROM tape_versions WHERE library_id = ?1", rusqlite::params![library_id])?;
-        tx.execute("DELETE FROM tapes WHERE library_id = ?1", rusqlite::params![library_id])?;
-        tx.execute("DELETE FROM jobs WHERE library_id = ?1", rusqlite::params![library_id])?;
-        tx.execute("DELETE FROM libraries WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute(
+            "DELETE FROM file_chunks WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        tx.execute(
+            "DELETE FROM files WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        tx.execute(
+            "DELETE FROM tape_versions WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        tx.execute(
+            "DELETE FROM tapes WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        tx.execute(
+            "DELETE FROM jobs WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
+        tx.execute(
+            "DELETE FROM libraries WHERE library_id = ?1",
+            rusqlite::params![library_id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -344,6 +365,7 @@ impl Catalog {
     // ── File + Chunk operations ─────────────────────────────
 
     /// Record a file and its chunk list in the catalog.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_file(
         &self,
         library_id: &str,
@@ -422,12 +444,13 @@ impl Catalog {
                 let hash_bytes: Vec<u8> = row.get(0)?;
                 let offset: i64 = row.get(1)?;
                 let size: i64 = row.get(2)?;
-                let hash_array: [u8; 32] = hash_bytes.as_slice().try_into()
-                    .map_err(|_| rusqlite::Error::InvalidColumnType(
+                let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
                         0,
                         "chunk_hash".into(),
                         rusqlite::types::Type::Blob,
-                    ))?;
+                    )
+                })?;
                 Ok(crate::chunker::ChunkMeta {
                     hash: blake3::Hash::from_bytes(hash_array),
                     offset: offset as u64,
@@ -552,12 +575,13 @@ impl Catalog {
                     let hash_bytes: Vec<u8> = row.get(0)?;
                     let offset: i64 = row.get(1)?;
                     let size: i64 = row.get(2)?;
-                    let hash_array: [u8; 32] = hash_bytes.as_slice().try_into()
-                        .map_err(|_| rusqlite::Error::InvalidColumnType(
+                    let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
+                        rusqlite::Error::InvalidColumnType(
                             0,
                             "chunk_hash".into(),
                             rusqlite::types::Type::Blob,
-                        ))?;
+                        )
+                    })?;
                     Ok(crate::chunker::ChunkMeta {
                         hash: blake3::Hash::from_bytes(hash_array),
                         offset: offset as u64,
@@ -574,6 +598,7 @@ impl Catalog {
     }
 
     /// Create a new job.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_job(
         &self,
         job_id: &str,
@@ -629,11 +654,19 @@ impl Catalog {
     pub fn list_jobs(&self, status_filter: Option<&str>) -> Result<Vec<JobRecord>> {
         fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
             Ok(JobRecord {
-                job_id: row.get(0)?, library_id: row.get(1)?, tape: row.get(2)?,
-                job_type: row.get(3)?, grade: row.get(4)?, file_path: row.get(5)?,
-                total_chunks: row.get(6)?, completed_chunks: row.get(7)?,
-                total_bytes: row.get(8)?, status: row.get(9)?,
-                created_at: row.get(10)?, updated_at: row.get(11)?, error: row.get(12)?,
+                job_id: row.get(0)?,
+                library_id: row.get(1)?,
+                tape: row.get(2)?,
+                job_type: row.get(3)?,
+                grade: row.get(4)?,
+                file_path: row.get(5)?,
+                total_chunks: row.get(6)?,
+                completed_chunks: row.get(7)?,
+                total_bytes: row.get(8)?,
+                status: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+                error: row.get(12)?,
             })
         }
 
@@ -643,7 +676,8 @@ impl Catalog {
                         completed_chunks, total_bytes, status, created_at, updated_at, error
                  FROM jobs WHERE status = ?1 ORDER BY grade, created_at",
             )?;
-            let jobs = stmt.query_map(rusqlite::params![status], row_to_job)?
+            let jobs = stmt
+                .query_map(rusqlite::params![status], row_to_job)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(jobs)
         } else {
@@ -652,14 +686,20 @@ impl Catalog {
                         completed_chunks, total_bytes, status, created_at, updated_at, error
                  FROM jobs ORDER BY grade, created_at",
             )?;
-            let jobs = stmt.query_map([], row_to_job)?
+            let jobs = stmt
+                .query_map([], row_to_job)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(jobs)
         }
     }
 
     /// Update a job's status and completed_chunks count.
-    pub fn update_job_progress(&self, job_id: &str, completed_chunks: i64, status: &str) -> Result<()> {
+    pub fn update_job_progress(
+        &self,
+        job_id: &str,
+        completed_chunks: i64,
+        status: &str,
+    ) -> Result<()> {
         let now = Self::unix_now();
         self.conn.execute(
             "UPDATE jobs SET completed_chunks = ?1, status = ?2, updated_at = ?3 WHERE job_id = ?4",
@@ -731,10 +771,22 @@ mod tests {
         ];
 
         catalog
-            .record_file("local", "default", "/test/file.bin", 1, 1500, None, None, 2, &chunks)
+            .record_file(
+                "local",
+                "default",
+                "/test/file.bin",
+                1,
+                1500,
+                None,
+                None,
+                2,
+                &chunks,
+            )
             .unwrap();
 
-        let retrieved = catalog.get_file_chunks("local", "default", "/test/file.bin").unwrap();
+        let retrieved = catalog
+            .get_file_chunks("local", "default", "/test/file.bin")
+            .unwrap();
         assert_eq!(retrieved.len(), 2);
         assert_eq!(retrieved[0].hash, hash1);
         assert_eq!(retrieved[0].offset, 0);
@@ -749,13 +801,43 @@ mod tests {
         let catalog = Catalog::open_in_memory().unwrap();
 
         catalog
-            .record_file("local", "docs", "/readme.txt", 1, 100, Some(1700000000), Some(0o644), 1, &[])
+            .record_file(
+                "local",
+                "docs",
+                "/readme.txt",
+                1,
+                100,
+                Some(1700000000),
+                Some(0o644),
+                1,
+                &[],
+            )
             .unwrap();
         catalog
-            .record_file("local", "docs", "/src/main.rs", 1, 200, Some(1700000000), Some(0o644), 1, &[])
+            .record_file(
+                "local",
+                "docs",
+                "/src/main.rs",
+                1,
+                200,
+                Some(1700000000),
+                Some(0o644),
+                1,
+                &[],
+            )
             .unwrap();
         catalog
-            .record_file("local", "docs", "/src/lib.rs", 1, 150, Some(1700000000), Some(0o644), 1, &[])
+            .record_file(
+                "local",
+                "docs",
+                "/src/lib.rs",
+                1,
+                150,
+                Some(1700000000),
+                Some(0o644),
+                1,
+                &[],
+            )
             .unwrap();
         catalog
             .record_file("local", "other", "/data.bin", 1, 500, None, None, 1, &[])
@@ -789,8 +871,30 @@ mod tests {
     fn job_crud() {
         let catalog = Catalog::open_in_memory().unwrap();
 
-        catalog.create_job("job-1", "lib-a", "tape-1", "fetch", 1, Some("/file.bin"), Some(10), Some(1000)).unwrap();
-        catalog.create_job("job-2", "lib-a", "tape-1", "fetch", 0, Some("/urgent.bin"), Some(5), Some(500)).unwrap();
+        catalog
+            .create_job(
+                "job-1",
+                "lib-a",
+                "tape-1",
+                "fetch",
+                1,
+                Some("/file.bin"),
+                Some(10),
+                Some(1000),
+            )
+            .unwrap();
+        catalog
+            .create_job(
+                "job-2",
+                "lib-a",
+                "tape-1",
+                "fetch",
+                0,
+                Some("/urgent.bin"),
+                Some(5),
+                Some(500),
+            )
+            .unwrap();
 
         let job = catalog.get_job("job-1").unwrap().unwrap();
         assert_eq!(job.job_id, "job-1");
@@ -828,8 +932,12 @@ mod tests {
         let catalog = Catalog::open_in_memory().unwrap();
 
         // Add
-        catalog.add_library("hub1", "Hub One", "192.168.1.1:4443", "certs/hub1.cert.der").unwrap();
-        catalog.add_library("hub2", "Hub Two", "10.0.0.1:4443", "certs/hub2.cert.der").unwrap();
+        catalog
+            .add_library("hub1", "Hub One", "192.168.1.1:4443", "certs/hub1.cert.der")
+            .unwrap();
+        catalog
+            .add_library("hub2", "Hub Two", "10.0.0.1:4443", "certs/hub2.cert.der")
+            .unwrap();
 
         // List
         let libs = catalog.list_libraries().unwrap();
@@ -868,7 +976,9 @@ mod tests {
         let catalog = Catalog::open_in_memory().unwrap();
 
         // Set up a library with files, chunks, tapes, jobs
-        catalog.add_library("hub-x", "Hub X", "10.0.0.1:4443", "certs/hubx.cert.der").unwrap();
+        catalog
+            .add_library("hub-x", "Hub X", "10.0.0.1:4443", "certs/hubx.cert.der")
+            .unwrap();
 
         let hash = blake3::hash(b"data");
         let chunks = vec![crate::chunker::ChunkMeta {
@@ -877,11 +987,39 @@ mod tests {
             size: 100,
             compressed_size: 80,
         }];
-        catalog.record_file("hub-x", "tape1", "/file.bin", 1, 100, None, None, 1, &chunks).unwrap();
-        catalog.create_job("j1", "hub-x", "tape1", "fetch", 1, Some("/file.bin"), Some(1), Some(100)).unwrap();
+        catalog
+            .record_file(
+                "hub-x",
+                "tape1",
+                "/file.bin",
+                1,
+                100,
+                None,
+                None,
+                1,
+                &chunks,
+            )
+            .unwrap();
+        catalog
+            .create_job(
+                "j1",
+                "hub-x",
+                "tape1",
+                "fetch",
+                1,
+                Some("/file.bin"),
+                Some(1),
+                Some(100),
+            )
+            .unwrap();
 
         // Verify data exists
-        assert!(!catalog.get_file_chunks("hub-x", "tape1", "/file.bin").unwrap().is_empty());
+        assert!(
+            !catalog
+                .get_file_chunks("hub-x", "tape1", "/file.bin")
+                .unwrap()
+                .is_empty()
+        );
         assert!(catalog.get_job("j1").unwrap().is_some());
 
         // Remove with cascade
@@ -889,16 +1027,33 @@ mod tests {
 
         // All child data should be gone
         assert!(catalog.get_library("hub-x").unwrap().is_none());
-        assert!(catalog.get_file_chunks("hub-x", "tape1", "/file.bin").unwrap().is_empty());
-        assert!(catalog.list_files("hub-x", "tape1", "/").unwrap().is_empty());
+        assert!(
+            catalog
+                .get_file_chunks("hub-x", "tape1", "/file.bin")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            catalog
+                .list_files("hub-x", "tape1", "/")
+                .unwrap()
+                .is_empty()
+        );
         assert!(catalog.get_job("j1").unwrap().is_none());
     }
 
     #[test]
     fn library_duplicate_add_errors() {
         let catalog = Catalog::open_in_memory().unwrap();
-        catalog.add_library("hub1", "Hub One", "1.2.3.4:4443", "certs/hub1.cert.der").unwrap();
-        let result = catalog.add_library("hub1", "Hub One Again", "5.6.7.8:4443", "certs/hub1b.cert.der");
+        catalog
+            .add_library("hub1", "Hub One", "1.2.3.4:4443", "certs/hub1.cert.der")
+            .unwrap();
+        let result = catalog.add_library(
+            "hub1",
+            "Hub One Again",
+            "5.6.7.8:4443",
+            "certs/hub1b.cert.der",
+        );
         assert!(result.is_err());
     }
 
@@ -906,7 +1061,8 @@ mod tests {
     fn catalog_uses_wal_mode() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = Catalog::open(dir.path().join("test.db").as_path()).unwrap();
-        let mode: String = catalog.conn
+        let mode: String = catalog
+            .conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
@@ -925,11 +1081,29 @@ mod tests {
         }];
 
         // Files in two different tapes
-        catalog.record_file("local", "docs", "/readme.txt", 1, 100, None, None, 1, &chunks).unwrap();
-        catalog.record_file("local", "docs", "/guide.txt", 1, 200, None, None, 1, &[]).unwrap();
-        catalog.record_file("local", "code", "/main.rs", 1, 300, None, None, 1, &chunks).unwrap();
+        catalog
+            .record_file(
+                "local",
+                "docs",
+                "/readme.txt",
+                1,
+                100,
+                None,
+                None,
+                1,
+                &chunks,
+            )
+            .unwrap();
+        catalog
+            .record_file("local", "docs", "/guide.txt", 1, 200, None, None, 1, &[])
+            .unwrap();
+        catalog
+            .record_file("local", "code", "/main.rs", 1, 300, None, None, 1, &chunks)
+            .unwrap();
         // Directory entry (entry_type=2) should NOT count
-        catalog.record_file("local", "docs", "/subdir", 2, 0, None, None, 1, &[]).unwrap();
+        catalog
+            .record_file("local", "docs", "/subdir", 2, 0, None, None, 1, &[])
+            .unwrap();
 
         let tapes = catalog.list_tapes("local").unwrap();
         assert_eq!(tapes.len(), 2);
@@ -958,12 +1132,36 @@ mod tests {
         let hash2 = blake3::hash(b"chunk-b");
 
         let chunks = vec![
-            crate::chunker::ChunkMeta { hash: hash1, offset: 0, size: 1000, compressed_size: 800 },
-            crate::chunker::ChunkMeta { hash: hash2, offset: 1000, size: 500, compressed_size: 400 },
+            crate::chunker::ChunkMeta {
+                hash: hash1,
+                offset: 0,
+                size: 1000,
+                compressed_size: 800,
+            },
+            crate::chunker::ChunkMeta {
+                hash: hash2,
+                offset: 1000,
+                size: 500,
+                compressed_size: 400,
+            },
         ];
 
-        catalog.record_file("local", "tape1", "/file.bin", 1, 1500, Some(1700000000), Some(0o644), 2, &chunks).unwrap();
-        catalog.record_file("local", "tape1", "/empty.txt", 1, 0, None, None, 1, &[]).unwrap();
+        catalog
+            .record_file(
+                "local",
+                "tape1",
+                "/file.bin",
+                1,
+                1500,
+                Some(1700000000),
+                Some(0o644),
+                2,
+                &chunks,
+            )
+            .unwrap();
+        catalog
+            .record_file("local", "tape1", "/empty.txt", 1, 0, None, None, 1, &[])
+            .unwrap();
 
         let files = catalog.get_all_files_with_chunks("local", "tape1").unwrap();
         assert_eq!(files.len(), 2);
@@ -1004,12 +1202,15 @@ mod tests {
                     last_seen INTEGER,
                     last_catalog_version INTEGER DEFAULT 0,
                     trust_level TEXT DEFAULT 'full'
-                );"
-            ).unwrap();
+                );",
+            )
+            .unwrap();
         }
         // Opening with Catalog should migrate and allow NULL wg_pubkey.
         let catalog = Catalog::open(&db_path).unwrap();
-        catalog.add_library("hub1", "Hub", "1.2.3.4:4443", "certs/hub1.cert.der").unwrap();
+        catalog
+            .add_library("hub1", "Hub", "1.2.3.4:4443", "certs/hub1.cert.der")
+            .unwrap();
         let lib = catalog.get_library("hub1").unwrap().unwrap();
         assert_eq!(lib.endpoint, "1.2.3.4:4443");
     }

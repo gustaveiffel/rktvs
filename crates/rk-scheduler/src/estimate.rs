@@ -62,7 +62,19 @@ mod tests {
 
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let result = chunker::ingest(&data, &store, 4_096, 8_192, 16_384).unwrap();
-        catalog.record_file("lib-a", "tape-1", "/test.bin", 1, data.len() as u64, None, None, 1, &result.chunks).unwrap();
+        catalog
+            .record_file(
+                "lib-a",
+                "tape-1",
+                "/test.bin",
+                1,
+                data.len() as u64,
+                None,
+                None,
+                1,
+                &result.chunks,
+            )
+            .unwrap();
 
         let resolver = ChunkResolver::new(None, &store);
         let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/test.bin").unwrap();
@@ -82,7 +94,19 @@ mod tests {
 
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let result = chunker::ingest(&data, &store_ingest, 4_096, 8_192, 16_384).unwrap();
-        catalog.record_file("lib-a", "tape-1", "/remote.bin", 1, data.len() as u64, None, None, 1, &result.chunks).unwrap();
+        catalog
+            .record_file(
+                "lib-a",
+                "tape-1",
+                "/remote.bin",
+                1,
+                data.len() as u64,
+                None,
+                None,
+                1,
+                &result.chunks,
+            )
+            .unwrap();
 
         let resolver = ChunkResolver::new(None, &store_local);
         let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/remote.bin").unwrap();

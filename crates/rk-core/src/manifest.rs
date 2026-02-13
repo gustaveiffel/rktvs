@@ -199,11 +199,14 @@ impl Manifest {
             cursor += 4;
 
             let hash = blake3::Hash::from_bytes(hash_bytes);
-            chunks.insert(hash, ChunkRef {
-                path_index,
-                offset,
-                length,
-            });
+            chunks.insert(
+                hash,
+                ChunkRef {
+                    path_index,
+                    offset,
+                    length,
+                },
+            );
         }
 
         Ok(Manifest { sources, chunks })
@@ -241,11 +244,14 @@ mod tests {
         let mut m = Manifest::new();
         let idx = m.add_source("/tmp/test.txt".into(), 1000, 1700000000);
         let hash = blake3::hash(b"test data");
-        m.insert_chunk(hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: 1000,
-        });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 1000,
+            },
+        );
 
         m.write_to_file(&path).unwrap();
         let loaded = Manifest::read_from_file(&path).unwrap();
@@ -275,9 +281,30 @@ mod tests {
         let h2 = blake3::hash(b"chunk2");
         let h3 = blake3::hash(b"chunk3");
 
-        m.insert_chunk(h1, ChunkRef { path_index: idx0, offset: 0, length: 500 });
-        m.insert_chunk(h2, ChunkRef { path_index: idx1, offset: 0, length: 400 });
-        m.insert_chunk(h3, ChunkRef { path_index: idx1, offset: 400, length: 400 });
+        m.insert_chunk(
+            h1,
+            ChunkRef {
+                path_index: idx0,
+                offset: 0,
+                length: 500,
+            },
+        );
+        m.insert_chunk(
+            h2,
+            ChunkRef {
+                path_index: idx1,
+                offset: 0,
+                length: 400,
+            },
+        );
+        m.insert_chunk(
+            h3,
+            ChunkRef {
+                path_index: idx1,
+                offset: 400,
+                length: 400,
+            },
+        );
 
         m.write_to_file(&path).unwrap();
         let loaded = Manifest::read_from_file(&path).unwrap();
@@ -295,8 +322,22 @@ mod tests {
         let idx1 = m.add_source("/b.txt".into(), 100, 2);
 
         let hash = blake3::hash(b"shared");
-        m.insert_chunk(hash, ChunkRef { path_index: idx0, offset: 0, length: 100 });
-        m.insert_chunk(hash, ChunkRef { path_index: idx1, offset: 0, length: 100 });
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx0,
+                offset: 0,
+                length: 100,
+            },
+        );
+        m.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx1,
+                offset: 0,
+                length: 100,
+            },
+        );
 
         let cr = m.get_chunk(&hash).unwrap();
         assert_eq!(cr.path_index, idx0, "first writer should win");
@@ -332,7 +373,14 @@ mod tests {
         let h = blake3::hash(b"present");
         let absent = blake3::hash(b"absent");
 
-        m.insert_chunk(h, ChunkRef { path_index: idx, offset: 0, length: 50 });
+        m.insert_chunk(
+            h,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 50,
+            },
+        );
         assert!(m.has_chunk(&h));
         assert!(!m.has_chunk(&absent));
     }

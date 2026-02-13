@@ -148,8 +148,10 @@ mod tests {
 
         let meta = std::fs::metadata(&src_path).unwrap();
         let mtime = meta
-            .modified().unwrap()
-            .duration_since(UNIX_EPOCH).unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
             .as_secs();
 
         let mut manifest = Manifest::new();
@@ -159,11 +161,14 @@ mod tests {
             mtime,
         );
         let hash = blake3::hash(content);
-        manifest.insert_chunk(hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: content.len() as u32,
-        });
+        manifest.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: content.len() as u32,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store);
         let data = resolver.get(&hash).unwrap();
@@ -180,7 +185,12 @@ mod tests {
         std::fs::write(&src_path, manifest_content).unwrap();
 
         let meta = std::fs::metadata(&src_path).unwrap();
-        let mtime = meta.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let hash = blake3::hash(manifest_content);
 
@@ -196,11 +206,14 @@ mod tests {
             manifest_content.len() as u64,
             mtime,
         );
-        manifest.insert_chunk(hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: manifest_content.len() as u32,
-        });
+        manifest.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: manifest_content.len() as u32,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store);
         let data = resolver.get(&hash).unwrap();
@@ -218,15 +231,18 @@ mod tests {
         let mut manifest = Manifest::new();
         let idx = manifest.add_source(
             src_path.to_string_lossy().to_string(),
-            8, // "original" len
+            8,          // "original" len
             9999999999, // fake mtime that won't match
         );
         let hash = blake3::hash(b"original");
-        manifest.insert_chunk(hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: 8,
-        });
+        manifest.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 8,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store);
         let result = resolver.get(&hash);
@@ -241,11 +257,14 @@ mod tests {
         let mut manifest = Manifest::new();
         let idx = manifest.add_source("/nonexistent/file.bin".into(), 100, 1);
         let hash = blake3::hash(b"whatever");
-        manifest.insert_chunk(hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: 100,
-        });
+        manifest.insert_chunk(
+            hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 100,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store);
         let result = resolver.get(&hash);
@@ -260,11 +279,14 @@ mod tests {
         let mut manifest = Manifest::new();
         let manifest_hash = blake3::hash(b"in manifest only");
         let idx = manifest.add_source("/fake.bin".into(), 100, 1);
-        manifest.insert_chunk(manifest_hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: 100,
-        });
+        manifest.insert_chunk(
+            manifest_hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: 100,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store);
 
@@ -283,7 +305,12 @@ mod tests {
         std::fs::write(&src_path, content).unwrap();
 
         let meta = std::fs::metadata(&src_path).unwrap();
-        let mtime = meta.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         // Use a WRONG hash in the manifest
         let wrong_hash = blake3::hash(b"different data");
@@ -293,11 +320,14 @@ mod tests {
             content.len() as u64,
             mtime,
         );
-        manifest.insert_chunk(wrong_hash, ChunkRef {
-            path_index: idx,
-            offset: 0,
-            length: content.len() as u32,
-        });
+        manifest.insert_chunk(
+            wrong_hash,
+            ChunkRef {
+                path_index: idx,
+                offset: 0,
+                length: content.len() as u32,
+            },
+        );
 
         let resolver = ChunkResolver::new(Some(&manifest), &store).with_verify(true);
         let result = resolver.get(&wrong_hash);

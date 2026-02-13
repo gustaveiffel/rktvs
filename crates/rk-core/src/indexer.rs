@@ -3,10 +3,10 @@
 use std::fs;
 use std::path::Path;
 
+use crate::Result;
 use crate::catalog::Catalog;
 use crate::chunker;
 use crate::manifest::{ChunkRef, Manifest};
-use crate::Result;
 
 /// Statistics returned after indexing a directory.
 #[derive(Debug, Default)]
@@ -88,12 +88,8 @@ pub fn index_directory(
             let data = fs::read(abs_path)?;
 
             // Chunk without writing to store
-            let chunk_metas = chunker::chunk_data(
-                &data,
-                config.min_chunk,
-                config.avg_chunk,
-                config.max_chunk,
-            );
+            let chunk_metas =
+                chunker::chunk_data(&data, config.min_chunk, config.avg_chunk, config.max_chunk);
 
             // Register source file in manifest
             let abs_str = abs_path.to_string_lossy().to_string();

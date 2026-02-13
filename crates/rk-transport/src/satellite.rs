@@ -93,10 +93,14 @@ impl Satellite {
         if ack.protocol_version < MIN_HUB_VERSION {
             anyhow::bail!(
                 "hub protocol version {} too old, satellite requires >= {} — upgrade the hub",
-                ack.protocol_version, MIN_HUB_VERSION,
+                ack.protocol_version,
+                MIN_HUB_VERSION,
             );
         }
-        info!(hub_version = ack.protocol_version, "handshake ok: {}", ack.message);
+        info!(
+            hub_version = ack.protocol_version,
+            "handshake ok: {}", ack.message
+        );
 
         Ok(Self {
             connection,
@@ -109,7 +113,10 @@ impl Satellite {
     /// Fetch a single chunk by BLAKE3 hash from the hub.
     /// Returns `None` if the chunk was not found on the hub.
     /// The `ChunkFetchResult.compressed` flag indicates whether data is zstd-compressed.
-    pub async fn fetch_chunk(&self, hash: &blake3::Hash) -> anyhow::Result<Option<ChunkFetchResult>> {
+    pub async fn fetch_chunk(
+        &self,
+        hash: &blake3::Hash,
+    ) -> anyhow::Result<Option<ChunkFetchResult>> {
         let (mut send, mut recv) = self.connection.open_bi().await?;
 
         // Write stream tag
@@ -159,9 +166,7 @@ impl Satellite {
         send.write_all(&[StreamTag::CatalogSync as u8]).await?;
 
         // Send request
-        let req = proto::CatalogSyncRequest {
-            tape: tape.into(),
-        };
+        let req = proto::CatalogSyncRequest { tape: tape.into() };
         let encoded = frame::encode_msg(&req);
         send.write_all(&encoded).await?;
         send.finish()?;
@@ -174,15 +179,18 @@ impl Satellite {
             anyhow::bail!("catalog sync failed: {}", resp.message);
         }
 
-        let tapes: Vec<(String, u64, u64)> = resp.tapes
+        let tapes: Vec<(String, u64, u64)> = resp
+            .tapes
             .into_iter()
             .map(|t| (t.name, t.file_count, t.total_size))
             .collect();
 
-        let files: Vec<SyncedFile> = resp.files
+        let files: Vec<SyncedFile> = resp
+            .files
             .into_iter()
             .map(|f| {
-                let chunks: Vec<SyncedChunk> = f.chunks
+                let chunks: Vec<SyncedChunk> = f
+                    .chunks
                     .into_iter()
                     .filter_map(|c| {
                         let hash_array: [u8; 32] = c.hash.as_slice().try_into().ok()?;
@@ -217,15 +225,23 @@ mod tests {
     #[tokio::test]
     async fn satellite_connects_and_handshakes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(rk_core::chunk_store::ChunkStore::new(dir.path().to_path_buf()));
+        let store = Arc::new(rk_core::chunk_store::ChunkStore::new(
+            dir.path().to_path_buf(),
+        ));
 
         let (cert, key) = crate::cert::generate_self_signed().unwrap();
         let server_config = crate::cert::server_config(cert.clone(), key).unwrap();
         let client_config = crate::cert::client_config(&cert).unwrap();
 
-        let hub = crate::hub::Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None)
-            .await
-            .unwrap();
+        let hub = crate::hub::Hub::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            server_config,
+            store,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let hub_addr = hub.local_addr();
         tokio::spawn(async move { hub.run().await });
 

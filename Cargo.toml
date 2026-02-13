@@ -2,7 +2,10 @@
 version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-repository = "https://github.com/rktvs/rk"
+repository = "https://github.com/gustaveiffel/rktvs"
+rust-version = "1.85"
+keywords = ["file-transfer", "quic", "content-addressed", "satellite", "chunking"]
+categories = ["network-programming", "command-line-utilities"]
 
 [package]
 name = "rk"
@@ -10,7 +13,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Content-addressed file delivery for hostile networks"
+readme = "README.md"
 
 [[bin]]
 name = "rk"

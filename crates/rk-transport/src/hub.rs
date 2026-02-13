@@ -3,12 +3,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use prost::Message;
 use quinn::{Endpoint, RecvStream, SendStream};
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_core::manifest::Manifest;
 use rk_core::resolver::ChunkResolver;
-use prost::Message;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
@@ -173,7 +173,9 @@ async fn handle_chunk_request(
     let data = recv.read_to_end(4096).await?;
     let req = proto::ChunkRequest::decode_length_delimited(data.as_slice())?;
 
-    let hash_bytes: [u8; 32] = req.hash.as_slice()
+    let hash_bytes: [u8; 32] = req
+        .hash
+        .as_slice()
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid hash length: {}", req.hash.len()))?;
     let hash = blake3::Hash::from_bytes(hash_bytes);
@@ -210,7 +212,8 @@ async fn handle_chunk_request(
                 compressed: false,
             },
         }
-    }).await?;
+    })
+    .await?;
 
     let encoded = frame::encode_msg(&resp);
     send.write_all(&encoded).await?;
@@ -275,11 +278,15 @@ async fn handle_catalog_sync(
                             mtime: f.mtime.unwrap_or(0),
                             mode: f.mode.unwrap_or(0),
                             version: f.version,
-                            chunks: f.chunks.into_iter().map(|c| proto::ChunkInfo {
-                                hash: c.hash.as_bytes().to_vec(),
-                                offset: c.offset,
-                                size: c.size as u64,
-                            }).collect(),
+                            chunks: f
+                                .chunks
+                                .into_iter()
+                                .map(|c| proto::ChunkInfo {
+                                    hash: c.hash.as_bytes().to_vec(),
+                                    offset: c.offset,
+                                    size: c.size as u64,
+                                })
+                                .collect(),
                         })
                         .collect();
                     proto::CatalogSyncResponse {
@@ -297,7 +304,8 @@ async fn handle_catalog_sync(
                 },
             }
         }
-    }).await?;
+    })
+    .await?;
 
     let encoded = frame::encode_msg(&resp);
     send.write_all(&encoded).await?;
@@ -317,7 +325,15 @@ mod tests {
         let (cert, key) = crate::cert::generate_self_signed().unwrap();
         let server_config = crate::cert::server_config(cert, key).unwrap();
 
-        let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None).await.unwrap();
+        let hub = Hub::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            server_config,
+            store,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let addr = hub.local_addr();
         assert_ne!(addr.port(), 0);
     }

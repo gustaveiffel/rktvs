@@ -31,7 +31,17 @@ fn roundtrip_file_through_chunks() {
     // 3. Record in catalog
     let file_path = "/test/bigfile.bin";
     catalog
-        .record_file("local", "default", file_path, 1, original.len() as u64, None, None, 1, &result.chunks)
+        .record_file(
+            "local",
+            "default",
+            file_path,
+            1,
+            original.len() as u64,
+            None,
+            None,
+            1,
+            &result.chunks,
+        )
         .unwrap();
 
     // 4. Reconstruct from catalog + store
@@ -78,7 +88,17 @@ fn empty_data_roundtrip() {
     let result = chunker::ingest(&original, &store, 8_192, 16_384, 32_768).unwrap();
 
     catalog
-        .record_file("local", "default", "/empty.bin", 1, 0, None, None, 1, &result.chunks)
+        .record_file(
+            "local",
+            "default",
+            "/empty.bin",
+            1,
+            0,
+            None,
+            None,
+            1,
+            &result.chunks,
+        )
         .unwrap();
 
     let chunk_list = catalog

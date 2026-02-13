@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use prost::Message;
 use quinn::Endpoint;
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_transport::{cert, hub::Hub, satellite::Satellite};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn fetch_chunk_over_localhost() {
@@ -18,9 +18,15 @@ async fn fetch_chunk_over_localhost() {
     let server_config = cert::server_config(cert.clone(), key).unwrap();
     let client_config = cert::client_config(&cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None)
-        .await
-        .unwrap();
+    let hub = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config,
+        store,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 
@@ -33,7 +39,10 @@ async fn fetch_chunk_over_localhost() {
     assert!(fetched.is_some(), "chunk should be found");
     let result = fetched.unwrap();
     // Hub has the chunk in store, so it should send compressed bytes
-    assert!(result.compressed, "chunk from store should be compressed on wire");
+    assert!(
+        result.compressed,
+        "chunk from store should be compressed on wire"
+    );
     // Decompress and verify content matches
     let decompressed = zstd::decode_all(result.data.as_slice()).unwrap();
     assert_eq!(decompressed, data);
@@ -55,16 +64,26 @@ async fn old_satellite_rejected_by_new_hub() {
     let server_config = cert::server_config(hub_cert.clone(), key).unwrap();
     let client_config = cert::client_config(&hub_cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None)
-        .await
-        .unwrap();
+    let hub = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config,
+        store,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 
     // Raw QUIC connection (bypass Satellite::connect to send old version)
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
     endpoint.set_default_client_config(client_config);
-    let conn = endpoint.connect(hub_addr, "localhost").unwrap().await.unwrap();
+    let conn = endpoint
+        .connect(hub_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
 
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
@@ -81,9 +100,14 @@ async fn old_satellite_rejected_by_new_hub() {
 
     // Read ack — should be rejected
     let ack_data = recv.read_to_end(4096).await.unwrap();
-    let ack = rk_transport::proto::HandshakeAck::decode_length_delimited(ack_data.as_slice()).unwrap();
+    let ack =
+        rk_transport::proto::HandshakeAck::decode_length_delimited(ack_data.as_slice()).unwrap();
     assert!(!ack.ok, "hub should reject old protocol version");
-    assert!(ack.message.contains("too old"), "message should explain the rejection: {}", ack.message);
+    assert!(
+        ack.message.contains("too old"),
+        "message should explain the rejection: {}",
+        ack.message
+    );
     assert_eq!(ack.protocol_version, rk_transport::hub::PROTOCOL_VERSION);
 }
 
@@ -98,12 +122,48 @@ async fn catalog_sync_over_localhost() {
     let hash1 = blake3::hash(b"chunk-alpha");
     let hash2 = blake3::hash(b"chunk-beta");
     let chunks = vec![
-        rk_core::chunker::ChunkMeta { hash: hash1, offset: 0, size: 1000, compressed_size: 800 },
-        rk_core::chunker::ChunkMeta { hash: hash2, offset: 1000, size: 500, compressed_size: 400 },
+        rk_core::chunker::ChunkMeta {
+            hash: hash1,
+            offset: 0,
+            size: 1000,
+            compressed_size: 800,
+        },
+        rk_core::chunker::ChunkMeta {
+            hash: hash2,
+            offset: 1000,
+            size: 500,
+            compressed_size: 400,
+        },
     ];
-    hub_catalog.record_file("local", "docs", "/readme.md", 1, 1500, Some(1700000000), Some(0o644), 3, &chunks).unwrap();
-    hub_catalog.record_file("local", "docs", "/guide.md", 1, 200, Some(1700000001), Some(0o644), 1, &[]).unwrap();
-    hub_catalog.record_file("local", "code", "/main.rs", 1, 300, None, None, 1, &[]).unwrap();
+    hub_catalog
+        .record_file(
+            "local",
+            "docs",
+            "/readme.md",
+            1,
+            1500,
+            Some(1700000000),
+            Some(0o644),
+            3,
+            &chunks,
+        )
+        .unwrap();
+    hub_catalog
+        .record_file(
+            "local",
+            "docs",
+            "/guide.md",
+            1,
+            200,
+            Some(1700000001),
+            Some(0o644),
+            1,
+            &[],
+        )
+        .unwrap();
+    hub_catalog
+        .record_file("local", "code", "/main.rs", 1, 300, None, None, 1, &[])
+        .unwrap();
 
     let hub_catalog = Arc::new(std::sync::Mutex::new(hub_catalog));
 
@@ -111,9 +171,15 @@ async fn catalog_sync_over_localhost() {
     let server_config = cert::server_config(hub_cert.clone(), key).unwrap();
     let client_config = cert::client_config(&hub_cert).unwrap();
 
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, Some(hub_catalog))
-        .await
-        .unwrap();
+    let hub = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config,
+        store,
+        None,
+        Some(hub_catalog),
+    )
+    .await
+    .unwrap();
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 
@@ -133,7 +199,10 @@ async fn catalog_sync_over_localhost() {
 
     // Step 2: sync a specific tape
     let (tapes2, files) = sat.sync_catalog("docs").await.unwrap();
-    assert!(tapes2.is_empty(), "syncing a tape should not return tape list");
+    assert!(
+        tapes2.is_empty(),
+        "syncing a tape should not return tape list"
+    );
     assert_eq!(files.len(), 2);
 
     let readme = files.iter().find(|f| f.path == "/readme.md").unwrap();
@@ -165,9 +234,15 @@ async fn catalog_sync_no_catalog_on_hub() {
     let client_config = cert::client_config(&hub_cert).unwrap();
 
     // Hub without catalog (None)
-    let hub = Hub::bind("127.0.0.1:0".parse().unwrap(), server_config, store, None, None)
-        .await
-        .unwrap();
+    let hub = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config,
+        store,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 

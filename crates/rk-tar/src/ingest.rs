@@ -6,9 +6,9 @@ use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 
 /// Default chunk sizes for ingestion.
-pub const MIN_CHUNK_SIZE: u32 = 1_048_576;   // 1 MB
-pub const AVG_CHUNK_SIZE: u32 = 4_194_304;   // 4 MB
-pub const MAX_CHUNK_SIZE: u32 = 16_777_216;  // 16 MB
+pub const MIN_CHUNK_SIZE: u32 = 1_048_576; // 1 MB
+pub const AVG_CHUNK_SIZE: u32 = 4_194_304; // 4 MB
+pub const MAX_CHUNK_SIZE: u32 = 16_777_216; // 16 MB
 
 /// Statistics returned after ingesting a tar archive.
 #[derive(Debug, Default)]
@@ -20,6 +20,7 @@ pub struct IngestStats {
 }
 
 /// Ingest a tar archive into the chunk store and catalog.
+#[allow(clippy::too_many_arguments)]
 pub fn ingest_tar<R: Read>(
     reader: R,
     store: &ChunkStore,
@@ -58,8 +59,19 @@ pub fn ingest_tar<R: Read>(
                 let mut data = Vec::with_capacity(size as usize);
                 entry.read_to_end(&mut data)?;
 
-                let result = rk_core::chunker::ingest(&data, store, min_chunk, avg_chunk, max_chunk)?;
-                catalog.record_file(library_id, tape, &path, 1, size, mtime, mode, 1, &result.chunks)?;
+                let result =
+                    rk_core::chunker::ingest(&data, store, min_chunk, avg_chunk, max_chunk)?;
+                catalog.record_file(
+                    library_id,
+                    tape,
+                    &path,
+                    1,
+                    size,
+                    mtime,
+                    mode,
+                    1,
+                    &result.chunks,
+                )?;
 
                 stats.files += 1;
                 stats.bytes += size;
@@ -143,7 +155,9 @@ mod tests {
         assert_eq!(a.mode, Some(0o644));
 
         // Chunks should be retrievable and reconstruct the original data
-        let chunks_a = catalog.get_file_chunks("local", "test", "dir/a.txt").unwrap();
+        let chunks_a = catalog
+            .get_file_chunks("local", "test", "dir/a.txt")
+            .unwrap();
         let mut reconstructed = Vec::new();
         for c in &chunks_a {
             reconstructed.extend_from_slice(&store.get(&c.hash).unwrap());

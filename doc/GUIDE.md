@@ -34,8 +34,8 @@ rk is written in Rust. You need:
 - **A C compiler** (gcc, clang, or MSVC) -- required by the bundled SQLite.
 
 ```bash
-git clone https://github.com/rktvs/rk.git
-cd rk
+git clone https://github.com/gustaveiffel/rktvs.git
+cd rktvs
 cargo build --release
 ```
 

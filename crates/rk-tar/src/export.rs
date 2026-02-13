@@ -19,9 +19,7 @@ pub fn export_tar<W: Write>(
 
     for file in &files {
         let mut header = tar::Header::new_gnu();
-        header
-            .set_path(&file.path)
-            .map_err(std::io::Error::other)?;
+        header.set_path(&file.path).map_err(std::io::Error::other)?;
 
         if file.entry_type == 2 {
             header.set_entry_type(tar::EntryType::Directory);
@@ -59,7 +57,7 @@ pub fn export_tar<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ingest::{self, MIN_CHUNK_SIZE, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE};
+    use crate::ingest::{self, AVG_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
     use rk_core::chunk_store::ChunkStore;
     use std::io::Cursor;
     use std::io::Read;
