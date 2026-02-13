@@ -8,6 +8,7 @@ use prost::Message;
 pub enum StreamTag {
     Control = 0x00,
     ChunkRequest = 0x01,
+    CatalogSync = 0x02,
 }
 
 impl TryFrom<u8> for StreamTag {
@@ -17,6 +18,7 @@ impl TryFrom<u8> for StreamTag {
         match value {
             0x00 => Ok(Self::Control),
             0x01 => Ok(Self::ChunkRequest),
+            0x02 => Ok(Self::CatalogSync),
             other => Err(other),
         }
     }
@@ -53,8 +55,10 @@ mod tests {
     fn stream_tag_roundtrip() {
         assert_eq!(StreamTag::Control as u8, 0x00);
         assert_eq!(StreamTag::ChunkRequest as u8, 0x01);
+        assert_eq!(StreamTag::CatalogSync as u8, 0x02);
         assert_eq!(StreamTag::try_from(0x00).unwrap(), StreamTag::Control);
         assert_eq!(StreamTag::try_from(0x01).unwrap(), StreamTag::ChunkRequest);
+        assert_eq!(StreamTag::try_from(0x02).unwrap(), StreamTag::CatalogSync);
         assert!(StreamTag::try_from(0xFF).is_err());
     }
 }
