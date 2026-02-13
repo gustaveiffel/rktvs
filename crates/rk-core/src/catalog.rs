@@ -185,7 +185,7 @@ impl Catalog {
 
     /// Run schema migrations for databases created by earlier versions.
     fn migrate(&self) -> Result<()> {
-        // Migration: add cert_path column (v0.1 → v0.2).
+        // Migration 1: add cert_path column (v0.1 → v0.2).
         // Ignore error if column already exists (fresh databases).
         let _ = self.conn.execute_batch(
             "ALTER TABLE libraries ADD COLUMN cert_path TEXT;"
@@ -195,6 +195,36 @@ impl Catalog {
             "UPDATE libraries SET cert_path = trust_level
              WHERE trust_level != 'full' AND cert_path IS NULL;"
         )?;
+
+        // Migration 2: relax wg_pubkey NOT NULL → nullable.
+        // Old schema had `wg_pubkey BLOB NOT NULL` but we don't use WireGuard
+        // yet. CREATE TABLE IF NOT EXISTS won't update existing constraints,
+        // so we must recreate the table.
+        let has_notnull: bool = self.conn.query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('libraries') WHERE name = 'wg_pubkey'",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(false);
+
+        if has_notnull {
+            self.conn.execute_batch(
+                "CREATE TABLE libraries_new (
+                    library_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    wg_pubkey BLOB,
+                    status TEXT DEFAULT 'offline',
+                    last_seen INTEGER,
+                    last_catalog_version INTEGER DEFAULT 0,
+                    trust_level TEXT DEFAULT 'full',
+                    cert_path TEXT
+                );
+                INSERT INTO libraries_new SELECT * FROM libraries;
+                DROP TABLE libraries;
+                ALTER TABLE libraries_new RENAME TO libraries;"
+            )?;
+        }
+
         Ok(())
     }
 
@@ -769,5 +799,32 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn migrate_relaxes_wg_pubkey_not_null() {
+        // Simulate a v0.1 database with wg_pubkey NOT NULL.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("old.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE libraries (
+                    library_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    wg_pubkey BLOB NOT NULL,
+                    status TEXT DEFAULT 'offline',
+                    last_seen INTEGER,
+                    last_catalog_version INTEGER DEFAULT 0,
+                    trust_level TEXT DEFAULT 'full'
+                );"
+            ).unwrap();
+        }
+        // Opening with Catalog should migrate and allow NULL wg_pubkey.
+        let catalog = Catalog::open(&db_path).unwrap();
+        catalog.add_library("hub1", "Hub", "1.2.3.4:4443", "certs/hub1.cert.der").unwrap();
+        let lib = catalog.get_library("hub1").unwrap().unwrap();
+        assert_eq!(lib.endpoint, "1.2.3.4:4443");
     }
 }
