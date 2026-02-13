@@ -46,6 +46,26 @@ pub struct JobRecord {
     pub error: Option<String>,
 }
 
+/// Summary of a tape within a library.
+#[derive(Debug, Clone)]
+pub struct TapeSummary {
+    pub tape_name: String,
+    pub file_count: u64,
+    pub total_size: u64,
+}
+
+/// A file entry with its associated chunk list.
+#[derive(Debug, Clone)]
+pub struct FileWithChunks {
+    pub path: String,
+    pub entry_type: i64,
+    pub size: u64,
+    pub mtime: Option<u64>,
+    pub mode: Option<u32>,
+    pub version: u64,
+    pub chunks: Vec<crate::chunker::ChunkMeta>,
+}
+
 pub struct Catalog {
     conn: Connection,
 }
@@ -462,6 +482,97 @@ impl Catalog {
         Ok(files)
     }
 
+    // ── Tape + bulk queries ───────────────────────────────
+
+    /// List distinct tapes for a library, with file count and total size.
+    pub fn list_tapes(&self, library_id: &str) -> Result<Vec<TapeSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tape, COUNT(*), COALESCE(SUM(size), 0)
+             FROM files
+             WHERE library_id = ?1 AND entry_type = 1 AND deleted_at IS NULL
+             GROUP BY tape
+             ORDER BY tape",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![library_id], |row| {
+                let count: i64 = row.get(1)?;
+                let size: i64 = row.get(2)?;
+                Ok(TapeSummary {
+                    tape_name: row.get(0)?,
+                    file_count: count as u64,
+                    total_size: size as u64,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Get all files in a tape with their chunk lists.
+    pub fn get_all_files_with_chunks(
+        &self,
+        library_id: &str,
+        tape: &str,
+    ) -> Result<Vec<FileWithChunks>> {
+        // First get all files
+        let mut file_stmt = self.conn.prepare(
+            "SELECT path, entry_type, size, mtime, mode, version
+             FROM files
+             WHERE library_id = ?1 AND tape = ?2 AND deleted_at IS NULL
+             ORDER BY path",
+        )?;
+        let files: Vec<FileWithChunks> = file_stmt
+            .query_map(rusqlite::params![library_id, tape], |row| {
+                let size: i64 = row.get(2)?;
+                let mtime: Option<i64> = row.get(3)?;
+                let mode: Option<i64> = row.get(4)?;
+                let version: i64 = row.get(5)?;
+                Ok(FileWithChunks {
+                    path: row.get(0)?,
+                    entry_type: row.get(1)?,
+                    size: size as u64,
+                    mtime: mtime.map(|v| v as u64),
+                    mode: mode.map(|v| v as u32),
+                    version: version as u64,
+                    chunks: Vec::new(),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Then get chunks for each file
+        let mut chunk_stmt = self.conn.prepare(
+            "SELECT chunk_hash, offset, size FROM file_chunks
+             WHERE library_id = ?1 AND tape = ?2 AND file_path = ?3
+             ORDER BY chunk_index",
+        )?;
+
+        let mut result = Vec::with_capacity(files.len());
+        for mut file in files {
+            let chunks = chunk_stmt
+                .query_map(rusqlite::params![library_id, tape, file.path], |row| {
+                    let hash_bytes: Vec<u8> = row.get(0)?;
+                    let offset: i64 = row.get(1)?;
+                    let size: i64 = row.get(2)?;
+                    let hash_array: [u8; 32] = hash_bytes.as_slice().try_into()
+                        .map_err(|_| rusqlite::Error::InvalidColumnType(
+                            0,
+                            "chunk_hash".into(),
+                            rusqlite::types::Type::Blob,
+                        ))?;
+                    Ok(crate::chunker::ChunkMeta {
+                        hash: blake3::Hash::from_bytes(hash_array),
+                        offset: offset as u64,
+                        size: size as usize,
+                        compressed_size: 0,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            file.chunks = chunks;
+            result.push(file);
+        }
+
+        Ok(result)
+    }
+
     /// Create a new job.
     pub fn create_job(
         &self,
@@ -799,6 +910,81 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn list_tapes_returns_distinct_tapes() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        let hash = blake3::hash(b"data");
+        let chunks = vec![crate::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 100,
+            compressed_size: 80,
+        }];
+
+        // Files in two different tapes
+        catalog.record_file("local", "docs", "/readme.txt", 1, 100, None, None, 1, &chunks).unwrap();
+        catalog.record_file("local", "docs", "/guide.txt", 1, 200, None, None, 1, &[]).unwrap();
+        catalog.record_file("local", "code", "/main.rs", 1, 300, None, None, 1, &chunks).unwrap();
+        // Directory entry (entry_type=2) should NOT count
+        catalog.record_file("local", "docs", "/subdir", 2, 0, None, None, 1, &[]).unwrap();
+
+        let tapes = catalog.list_tapes("local").unwrap();
+        assert_eq!(tapes.len(), 2);
+
+        let docs = tapes.iter().find(|t| t.tape_name == "docs").unwrap();
+        assert_eq!(docs.file_count, 2); // only regular files
+        assert_eq!(docs.total_size, 300); // 100 + 200
+
+        let code = tapes.iter().find(|t| t.tape_name == "code").unwrap();
+        assert_eq!(code.file_count, 1);
+        assert_eq!(code.total_size, 300);
+    }
+
+    #[test]
+    fn list_tapes_empty_library() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        let tapes = catalog.list_tapes("nonexistent").unwrap();
+        assert!(tapes.is_empty());
+    }
+
+    #[test]
+    fn get_all_files_with_chunks_roundtrip() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        let hash1 = blake3::hash(b"chunk-a");
+        let hash2 = blake3::hash(b"chunk-b");
+
+        let chunks = vec![
+            crate::chunker::ChunkMeta { hash: hash1, offset: 0, size: 1000, compressed_size: 800 },
+            crate::chunker::ChunkMeta { hash: hash2, offset: 1000, size: 500, compressed_size: 400 },
+        ];
+
+        catalog.record_file("local", "tape1", "/file.bin", 1, 1500, Some(1700000000), Some(0o644), 2, &chunks).unwrap();
+        catalog.record_file("local", "tape1", "/empty.txt", 1, 0, None, None, 1, &[]).unwrap();
+
+        let files = catalog.get_all_files_with_chunks("local", "tape1").unwrap();
+        assert_eq!(files.len(), 2);
+
+        let empty = files.iter().find(|f| f.path == "/empty.txt").unwrap();
+        assert!(empty.chunks.is_empty());
+        assert_eq!(empty.version, 1);
+
+        let file = files.iter().find(|f| f.path == "/file.bin").unwrap();
+        assert_eq!(file.entry_type, 1);
+        assert_eq!(file.size, 1500);
+        assert_eq!(file.mtime, Some(1700000000));
+        assert_eq!(file.mode, Some(0o644));
+        assert_eq!(file.version, 2);
+        assert_eq!(file.chunks.len(), 2);
+        assert_eq!(file.chunks[0].hash, hash1);
+        assert_eq!(file.chunks[0].offset, 0);
+        assert_eq!(file.chunks[0].size, 1000);
+        assert_eq!(file.chunks[1].hash, hash2);
+        assert_eq!(file.chunks[1].offset, 1000);
+        assert_eq!(file.chunks[1].size, 500);
     }
 
     #[test]
