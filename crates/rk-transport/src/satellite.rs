@@ -10,7 +10,7 @@ use crate::frame::{self, StreamTag};
 use crate::proto;
 
 /// Protocol version this satellite speaks.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Minimum hub protocol version this satellite accepts.
 const MIN_HUB_VERSION: u32 = 2;
@@ -19,16 +19,38 @@ const MIN_HUB_VERSION: u32 = 2;
 /// 16 MB max chunk + protobuf overhead + safety margin.
 const MAX_CHUNK_RESPONSE: usize = 17 * 1024 * 1024;
 
+/// Maximum response size for a catalog sync (4 MB).
+const MAX_CATALOG_RESPONSE: usize = 4 * 1024 * 1024;
+
 /// Result of a chunk fetch, preserving the compressed flag from the wire.
 pub struct ChunkFetchResult {
     pub data: Vec<u8>,
     pub compressed: bool,
 }
 
+/// A file received during catalog sync.
+pub struct SyncedFile {
+    pub path: String,
+    pub entry_type: i64,
+    pub size: u64,
+    pub mtime: u64,
+    pub mode: u32,
+    pub version: u64,
+    pub chunks: Vec<SyncedChunk>,
+}
+
+/// A chunk reference received during catalog sync.
+pub struct SyncedChunk {
+    pub hash: blake3::Hash,
+    pub offset: u64,
+    pub size: u64,
+}
+
 pub struct Satellite {
     connection: Connection,
     _endpoint: Endpoint,
     pub satellite_id: String,
+    pub hub_protocol_version: u32,
 }
 
 impl Satellite {
@@ -78,6 +100,7 @@ impl Satellite {
             connection,
             _endpoint: endpoint,
             satellite_id: satellite_id.to_string(),
+            hub_protocol_version: ack.protocol_version,
         })
     }
 
@@ -110,6 +133,77 @@ impl Satellite {
         } else {
             Ok(None)
         }
+    }
+    /// Sync catalog metadata from the hub.
+    ///
+    /// If `tape` is empty, lists available tapes and returns `(tapes, [])`.
+    /// If `tape` is set, returns `([], files)` with full chunk lists.
+    ///
+    /// Tapes are returned as `(name, file_count, total_size)` tuples.
+    pub async fn sync_catalog(
+        &self,
+        tape: &str,
+    ) -> anyhow::Result<(Vec<(String, u64, u64)>, Vec<SyncedFile>)> {
+        if self.hub_protocol_version < 3 {
+            anyhow::bail!(
+                "hub protocol version {} does not support catalog sync (requires >= 3)",
+                self.hub_protocol_version,
+            );
+        }
+
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+
+        // Write stream tag
+        send.write_all(&[StreamTag::CatalogSync as u8]).await?;
+
+        // Send request
+        let req = proto::CatalogSyncRequest {
+            tape: tape.into(),
+        };
+        let encoded = frame::encode_msg(&req);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+
+        // Read response
+        let resp_data = recv.read_to_end(MAX_CATALOG_RESPONSE).await?;
+        let resp = proto::CatalogSyncResponse::decode_length_delimited(resp_data.as_slice())?;
+
+        if !resp.ok {
+            anyhow::bail!("catalog sync failed: {}", resp.message);
+        }
+
+        let tapes: Vec<(String, u64, u64)> = resp.tapes
+            .into_iter()
+            .map(|t| (t.name, t.file_count, t.total_size))
+            .collect();
+
+        let files: Vec<SyncedFile> = resp.files
+            .into_iter()
+            .map(|f| {
+                let chunks: Vec<SyncedChunk> = f.chunks
+                    .into_iter()
+                    .filter_map(|c| {
+                        let hash_array: [u8; 32] = c.hash.as_slice().try_into().ok()?;
+                        Some(SyncedChunk {
+                            hash: blake3::Hash::from_bytes(hash_array),
+                            offset: c.offset,
+                            size: c.size,
+                        })
+                    })
+                    .collect();
+                SyncedFile {
+                    path: f.path,
+                    entry_type: f.entry_type,
+                    size: f.size,
+                    mtime: f.mtime,
+                    mode: f.mode,
+                    version: f.version,
+                    chunks,
+                }
+            })
+            .collect();
+
+        Ok((tapes, files))
     }
 }
 
