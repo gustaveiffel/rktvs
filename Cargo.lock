@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "rk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "rk-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "fastcdc",
@@ -961,7 +961,7 @@ dependencies = [
 
 [[package]]
 name = "rk-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "rk-tar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rk-core",
  "tar",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "rk-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
