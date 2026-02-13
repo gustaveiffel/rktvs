@@ -92,7 +92,14 @@ rk library ping myhub
 rk library list
 ```
 
-Fetch files (requires catalog metadata on the satellite side -- full catalog sync is not yet implemented):
+Sync the catalog (fetch file metadata from the hub):
+
+```bash
+rk library sync myhub
+rk ls myhub:demo/
+```
+
+Fetch files:
 
 ```bash
 rk fetch myhub:demo/path/to/file --grade normal
@@ -130,6 +137,7 @@ rk jobs --status pending
 | `rk library list` | List known libraries |
 | `rk library remove <id>` | Remove a library |
 | `rk library ping <id>` | Ping a library to check connectivity |
+| `rk library sync <id> [--tape <name>]` | Sync catalog metadata from a remote library |
 | `rk fetch <library>:<tape>/<path> [--grade <g>]` | Fetch a file from a remote library |
 
 Grades: `urgent` (P0), `normal` (P1), `batch` (P2), `background` (P3).
@@ -182,11 +190,9 @@ What works today:
 - Grade x CostTier scheduling matrix
 - Transfer cost estimation without data transfer
 - Resumable chunk-level fetching with job tracking
-- 84 tests passing across all crates, 0 clippy warnings
+- Catalog sync between hub and satellite (`rk library sync`)
 
 What is planned:
-
-- Catalog sync between hub and satellite (satellite currently needs metadata pre-populated)
 - Connection reuse and 0-RTT reconnect
 - Link cost auto-detection
 - Tape ACL enforcement

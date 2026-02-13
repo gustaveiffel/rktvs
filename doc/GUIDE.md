@@ -481,17 +481,26 @@ Short forms work too: `p0`, `p1`, `p2`, `p3`.
 If a fetch is interrupted (network drop, Ctrl-C), re-running the same command
 resumes from where it left off. Chunks already present locally are skipped.
 
-### Current limitation
+### Catalog sync
 
-The satellite must have file/chunk metadata in its local catalog before
-fetching. Automatic catalog sync between hub and satellite is not yet
-implemented. For now, you can:
+Before fetching, the satellite needs file metadata. Use `rk library sync` to
+pull the catalog from the hub:
 
-- Copy the hub's `catalog.db` to the satellite manually.
-- Use the same catalog database on both sides.
-- Populate the satellite's catalog through other means.
+```bash
+rk library sync myhub              # sync all tapes
+rk library sync myhub --tape docs  # sync a specific tape
+```
 
-This is the next major feature planned for rk.
+This fetches file paths, sizes, timestamps, and chunk hashes over a dedicated
+QUIC stream (CatalogSync, tag 0x02). No file data is transferred -- only
+metadata. Re-running sync is idempotent (INSERT OR REPLACE).
+
+After syncing, browse and fetch as usual:
+
+```bash
+rk ls myhub:docs/
+rk fetch myhub:docs/readme.md --grade normal
+```
 
 ---
 
@@ -641,17 +650,21 @@ rk --data-dir /tmp/rk-sat library ping myhub
 rk --data-dir /tmp/rk-sat library list
 ```
 
-### Step 5: Fetch files
+### Step 5: Sync catalog and fetch files
 
-For the satellite to fetch, it needs catalog metadata. In this tutorial we copy
-the hub's catalog:
+Sync the catalog from the hub (fetches metadata only, no file data):
 
 ```bash
-# Copy catalog from hub to satellite (temporary workaround)
-cp /tmp/rk-hub/catalog.db /tmp/rk-sat/catalog.db
+rk --data-dir /tmp/rk-sat library sync myhub
 ```
 
-Now fetch:
+Browse the remote catalog:
+
+```bash
+rk --data-dir /tmp/rk-sat ls myhub:demo/
+```
+
+Fetch a file:
 
 ```bash
 rk --data-dir /tmp/rk-sat fetch myhub:demo/test-data/random.bin
@@ -725,9 +738,8 @@ be upgraded to the same version. Rebuild and redeploy the outdated binary.
 
 ### "no chunk metadata for ..."
 
-The satellite doesn't have catalog metadata for the requested file. Catalog
-sync is not yet implemented. See the tutorial for how to copy the catalog
-manually.
+The satellite doesn't have catalog metadata for the requested file. Run
+`rk library sync <library>` to fetch metadata from the hub first.
 
 ### "hash mismatch for chunk N"
 
@@ -763,8 +775,9 @@ RUST_LOG=rk_transport=trace rk library ping myhub
 
 ## 16. Known Limitations
 
-- **No catalog sync.** Satellites need metadata pre-populated. This is the most
-  significant gap and the next planned feature.
+- **Full-tape sync only.** Catalog sync transfers the entire tape metadata each
+  time (no incremental delta). Fine for typical tape sizes; pagination planned
+  for very large tapes.
 - **Single connection per fetch.** Each `rk fetch` creates a new QUIC endpoint.
   Connection reuse and 0-RTT reconnect are not yet implemented.
 - **No client authentication.** Any client with the hub's public certificate

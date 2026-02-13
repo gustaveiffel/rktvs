@@ -124,6 +124,21 @@ let chunks: Vec<ChunkMeta> = catalog.get_file_chunks(library_id, tape, path)?;
 let files: Vec<FileEntry> = catalog.list_files(library_id, tape, "/src/")?;
 ```
 
+#### Tape and bulk queries
+
+```rust
+use rk_core::catalog::{TapeSummary, FileWithChunks};
+
+// List distinct tapes for a library with file count and total size.
+// Only counts regular files (entry_type = 1).
+let tapes: Vec<TapeSummary> = catalog.list_tapes("local")?;
+// TapeSummary { tape_name, file_count, total_size }
+
+// Get all files in a tape with their chunk lists.
+let files: Vec<FileWithChunks> = catalog.get_all_files_with_chunks("local", "docs")?;
+// FileWithChunks { path, entry_type, size, mtime, mode, version, chunks: Vec<ChunkMeta> }
+```
+
 #### Job operations
 
 ```rust
@@ -330,16 +345,23 @@ QUIC server that serves chunks to satellites.
 
 ```rust
 use rk_transport::hub::Hub;
-use std::sync::Arc;
+use rk_core::catalog::Catalog;
+use std::sync::{Arc, Mutex};
 
 let store = Arc::new(ChunkStore::new(data_dir));
 let manifest = None; // or Some(Arc::new(manifest))
+
+// Optional: provide a Catalog for CatalogSync support.
+let catalog = Some(Arc::new(Mutex::new(
+    Catalog::open(Path::new("catalog.db"))?
+)));
 
 let hub = Hub::bind(
     "0.0.0.0:4443".parse()?,
     server_config,
     store,
     manifest,
+    catalog,   // None for chunk-only hubs
 ).await?;
 
 let addr = hub.local_addr();
@@ -348,13 +370,14 @@ let addr = hub.local_addr();
 hub.run().await;
 ```
 
-The hub enforces a **1024 max connections** semaphore. Chunk resolution runs
-on `spawn_blocking` to avoid stalling the async runtime. Chunks from the store
-are served compressed (`compressed = true`); chunks from the manifest are
-served decompressed (`compressed = false`).
+The hub enforces a **1024 max connections** semaphore. Chunk resolution and
+catalog queries run on `spawn_blocking` to avoid stalling the async runtime.
+Chunks from the store are served compressed (`compressed = true`); chunks from
+the manifest are served decompressed (`compressed = false`).
 
-**Protocol version:** `hub::PROTOCOL_VERSION` (currently 2). The hub rejects
-satellites with an older protocol version at handshake time.
+**Protocol version:** `hub::PROTOCOL_VERSION` (currently 3). The hub rejects
+satellites with protocol version < 2 at handshake time. CatalogSync requires
+version 3.
 
 ### Satellite
 
@@ -386,10 +409,30 @@ if let Some(r) = result {
 
 **ChunkFetchResult fields:** `data: Vec<u8>`, `compressed: bool`.
 
-**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 2). The
+#### Catalog sync
+
+```rust
+use rk_transport::satellite::{SyncedFile, SyncedChunk};
+
+// List tapes on the hub (pass empty string for tape).
+let (tapes, _) = satellite.sync_catalog("").await?;
+// tapes: Vec<(name: String, file_count: u64, total_size: u64)>
+
+// Sync a specific tape — returns files with chunk hashes.
+let (_, files) = satellite.sync_catalog("docs").await?;
+// files: Vec<SyncedFile>
+// SyncedFile { path, entry_type, size, mtime, mode, version, chunks: Vec<SyncedChunk> }
+// SyncedChunk { hash: blake3::Hash, offset: u64, size: u64 }
+```
+
+The satellite checks `hub_protocol_version >= 3` before opening a CatalogSync
+stream. Returns an error if the hub is too old.
+
+**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 3). The
 satellite rejects hubs with an older protocol version at handshake time.
 The `server_name` must match a SAN in the hub's certificate (use `--san`
-at `hub init` time).
+at `hub init` time). The satellite stores `hub_protocol_version` from the
+handshake ack for feature gating.
 
 ---
 
@@ -472,7 +515,7 @@ async fn main() -> anyhow::Result<()> {
     let config = cert::server_config(cert, key)?;
     let store = Arc::new(ChunkStore::new("/srv/hub".into()));
 
-    let hub = Hub::bind("0.0.0.0:4443".parse()?, config, store, None).await?;
+    let hub = Hub::bind("0.0.0.0:4443".parse()?, config, store, None, None).await?;
     println!("hub listening on {}", hub.local_addr());
     hub.run().await;
     Ok(())
