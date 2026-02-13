@@ -29,6 +29,7 @@ pub struct ChunkFetchResult {
 }
 
 /// A file received during catalog sync.
+#[derive(Debug)]
 pub struct SyncedFile {
     pub path: String,
     pub entry_type: i64,
@@ -40,6 +41,7 @@ pub struct SyncedFile {
 }
 
 /// A chunk reference received during catalog sync.
+#[derive(Debug)]
 pub struct SyncedChunk {
     pub hash: blake3::Hash,
     pub offset: u64,
