@@ -49,7 +49,7 @@ cp target/release/rk ~/.local/bin/    # or /usr/local/bin/
 
 ```bash
 rk --help
-cargo test --workspace    # 84 tests, should all pass
+cargo test --workspace    # 91 tests, should all pass
 ```
 
 ---
@@ -104,7 +104,7 @@ Check version (includes protocol version for debugging compatibility issues):
 
 ```bash
 rk --version
-# rk 0.1.0 (protocol v2)
+# rk 0.2.0 (protocol v3)
 ```
 
 Every rk command operates on a data directory. You don't need to initialize
@@ -462,6 +462,23 @@ Fetch paths use the format `<library>:<tape>/<path>`:
 myhub:project/src/main.rs
 backup-hub:photos/2024/vacation.tar
 ```
+
+### Glob patterns
+
+Fetch multiple files matching a pattern:
+
+```bash
+rk fetch myhub:project/videos/*.mov --grade normal
+rk fetch myhub:project/src/**/*.rs --grade batch
+```
+
+Supported wildcards:
+- `*` matches any characters within a path segment
+- `?` matches a single character
+
+The pattern is matched against file paths in the local catalog (run
+`rk library sync` first). All matching files are fetched over a single
+connection, each with its own job for resume tracking.
 
 ### Grades
 

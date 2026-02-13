@@ -175,11 +175,8 @@ client, no GUI required.
 
 This is a young project. Be aware of what it cannot do today:
 
-- **Alpha stage.** Core functionality works and is tested (80 tests), but this
+- **Alpha stage.** Core functionality works and is tested (91 tests), but this
   is not production-hardened software. Expect rough edges.
-- **No catalog sync.** The satellite currently needs file/chunk metadata
-  pre-populated in its local catalog. Automatic catalog sync between hub and
-  satellite is the next major feature.
 - **No GUI.** CLI only. If you need a graphical interface, look elsewhere for
   now.
 - **No mobile client.** There is no iOS or Android app. This is a server and

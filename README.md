@@ -138,7 +138,7 @@ rk jobs --status pending
 | `rk library remove <id>` | Remove a library |
 | `rk library ping <id>` | Ping a library to check connectivity |
 | `rk library sync <id> [--tape <name>]` | Sync catalog metadata from a remote library |
-| `rk fetch <library>:<tape>/<path> [--grade <g>]` | Fetch a file from a remote library |
+| `rk fetch <library>:<tape>/<path> [--grade <g>]` | Fetch a file from a remote library (supports glob patterns: `*.mov`, `src/**/*.rs`) |
 
 Grades: `urgent` (P0), `normal` (P1), `batch` (P2), `background` (P3).
 
