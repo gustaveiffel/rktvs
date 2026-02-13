@@ -142,6 +142,14 @@ enum LibraryCommands {
         /// Library identifier
         id: String,
     },
+    /// Sync catalog metadata from a remote library
+    Sync {
+        /// Library identifier
+        id: String,
+        /// Sync only this tape (syncs all if omitted)
+        #[arg(long)]
+        tape: Option<String>,
+    },
 }
 
 fn resolve_data_dir(raw: &str) -> PathBuf {
@@ -328,8 +336,7 @@ async fn main() -> Result<()> {
                 if library_id != "local" {
                     eprintln!(
                         "no files found for {path}\n\
-                         hint: catalog sync is not yet implemented — \
-                         the satellite needs metadata before browsing remote files"
+                         hint: run `rk library sync {library_id}` to fetch catalog metadata first"
                     );
                 } else {
                     eprintln!("no files found in {path}");
@@ -487,7 +494,13 @@ async fn main() -> Result<()> {
                 let store = Arc::new(store);
                 let manifest = manifest.map(Arc::new);
 
-                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest, None)
+                // Open a second Catalog handle for the hub (SQLite WAL allows concurrent readers)
+                let hub_catalog = Arc::new(std::sync::Mutex::new(
+                    Catalog::open(data_dir.join("catalog.db").as_path())
+                        .context("opening hub catalog")?
+                ));
+
+                let hub = rk_transport::hub::Hub::bind(addr, server_config, store, manifest, Some(hub_catalog))
                     .await
                     .context("binding hub server")?;
 
@@ -588,6 +601,76 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+
+            LibraryCommands::Sync { id, tape } => {
+                validate_library_id(&id)?;
+                let start = Instant::now();
+
+                let (satellite, _lib) = connect_to_library(&catalog, &data_dir, &id, "rk-sync")
+                    .await
+                    .context("connecting for catalog sync")?;
+
+                // Determine which tapes to sync
+                let tapes_to_sync: Vec<String> = if let Some(ref t) = tape {
+                    vec![t.clone()]
+                } else {
+                    // List tapes first
+                    let (tape_list, _) = satellite.sync_catalog("").await
+                        .context("listing tapes")?;
+                    if tape_list.is_empty() {
+                        eprintln!("no tapes found on '{id}'");
+                        return Ok(());
+                    }
+                    for (name, files, size) in &tape_list {
+                        eprintln!("  {name}: {files} files, {size} bytes");
+                    }
+                    tape_list.into_iter().map(|(name, _, _)| name).collect()
+                };
+
+                let mut total_files = 0u64;
+                let mut total_chunks = 0u64;
+
+                for tape_name in &tapes_to_sync {
+                    eprintln!("syncing {id}:{tape_name}/ ...");
+                    let (_, files) = satellite.sync_catalog(tape_name).await
+                        .with_context(|| format!("syncing tape '{tape_name}'"))?;
+
+                    for file in &files {
+                        let chunks: Vec<rk_core::chunker::ChunkMeta> = file.chunks
+                            .iter()
+                            .map(|c| rk_core::chunker::ChunkMeta {
+                                hash: c.hash,
+                                offset: c.offset,
+                                size: c.size as usize,
+                                compressed_size: 0,
+                            })
+                            .collect();
+
+                        catalog.record_file(
+                            &id,
+                            tape_name,
+                            &file.path,
+                            file.entry_type,
+                            file.size,
+                            if file.mtime > 0 { Some(file.mtime) } else { None },
+                            if file.mode > 0 { Some(file.mode) } else { None },
+                            file.version,
+                            &chunks,
+                        ).with_context(|| format!("recording file '{}'", file.path))?;
+
+                        total_chunks += chunks.len() as u64;
+                    }
+                    total_files += files.len() as u64;
+                }
+
+                catalog.update_library_status(&id, "online")?;
+                let elapsed = start.elapsed();
+                eprintln!(
+                    "synced {} tapes, {} files, {} chunks ({:.1}ms)",
+                    tapes_to_sync.len(), total_files, total_chunks,
+                    elapsed.as_secs_f64() * 1000.0,
+                );
+            }
         },
 
         // ── Fetch command ───────────────────────────────────
@@ -609,8 +692,7 @@ async fn main() -> Result<()> {
             if chunks.is_empty() {
                 bail!(
                     "no chunk metadata for {library_id}:{tape}/{file_path}\n\
-                     hint: the satellite needs catalog metadata before fetching. \
-                     Catalog sync is not yet implemented."
+                     hint: run `rk library sync {library_id}` to fetch catalog metadata first"
                 );
             }
 
