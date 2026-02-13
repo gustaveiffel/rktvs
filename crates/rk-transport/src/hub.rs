@@ -10,7 +10,7 @@ use rk_core::manifest::Manifest;
 use rk_core::resolver::ChunkResolver;
 use prost::Message;
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::frame::{self, StreamTag};
 use crate::proto;
@@ -73,7 +73,12 @@ impl Hub {
                     Ok(conn) => {
                         info!(remote = %conn.remote_address(), version = env!("CARGO_PKG_VERSION"), "connection accepted");
                         if let Err(e) = handle_connection(conn, store, manifest, catalog).await {
-                            warn!("connection error: {e}");
+                            let msg = e.to_string();
+                            if msg.contains("closed by peer") && msg.contains(": 0") {
+                                debug!("connection closed cleanly");
+                            } else {
+                                warn!("connection error: {e}");
+                            }
                         }
                     }
                     Err(e) => warn!("incoming connection failed: {e}"),
