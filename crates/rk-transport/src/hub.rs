@@ -8,15 +8,20 @@ use rk_core::chunk_store::ChunkStore;
 use rk_core::manifest::Manifest;
 use rk_core::resolver::ChunkResolver;
 use prost::Message;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::frame::{self, StreamTag};
 use crate::proto;
 
+/// Maximum concurrent connections the hub will accept.
+const MAX_CONNECTIONS: usize = 1024;
+
 pub struct Hub {
     endpoint: Endpoint,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    conn_semaphore: Arc<Semaphore>,
 }
 
 impl Hub {
@@ -28,7 +33,12 @@ impl Hub {
         manifest: Option<Arc<Manifest>>,
     ) -> std::io::Result<Self> {
         let endpoint = Endpoint::server(server_config, addr)?;
-        Ok(Self { endpoint, store, manifest })
+        Ok(Self {
+            endpoint,
+            store,
+            manifest,
+            conn_semaphore: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        })
     }
 
     /// Return the local address the hub is listening on.
@@ -41,7 +51,12 @@ impl Hub {
         while let Some(incoming) = self.endpoint.accept().await {
             let store = self.store.clone();
             let manifest = self.manifest.clone();
+            let semaphore = self.conn_semaphore.clone();
             tokio::spawn(async move {
+                let _permit = match semaphore.acquire().await {
+                    Ok(permit) => permit,
+                    Err(_) => return, // semaphore closed
+                };
                 match incoming.await {
                     Ok(conn) => {
                         info!(remote = %conn.remote_address(), "connection accepted");
@@ -88,7 +103,7 @@ async fn handle_stream(
     match tag {
         StreamTag::Control => handle_control(&mut send, &mut recv).await?,
         StreamTag::ChunkRequest => {
-            handle_chunk_request(&mut send, &mut recv, &store, manifest.as_deref()).await?;
+            handle_chunk_request(&mut send, &mut recv, store, manifest).await?;
         }
     }
 
@@ -113,8 +128,8 @@ async fn handle_control(send: &mut SendStream, recv: &mut RecvStream) -> anyhow:
 async fn handle_chunk_request(
     send: &mut SendStream,
     recv: &mut RecvStream,
-    store: &ChunkStore,
-    manifest: Option<&Manifest>,
+    store: Arc<ChunkStore>,
+    manifest: Option<Arc<Manifest>>,
 ) -> anyhow::Result<()> {
     let data = recv.read_to_end(4096).await?;
     let req = proto::ChunkRequest::decode_length_delimited(data.as_slice())?;
@@ -124,19 +139,39 @@ async fn handle_chunk_request(
         .map_err(|_| anyhow::anyhow!("invalid hash length: {}", req.hash.len()))?;
     let hash = blake3::Hash::from_bytes(hash_bytes);
 
-    let resolver = ChunkResolver::new(manifest, store);
-    let resp = match resolver.get(&hash) {
-        Ok(chunk_data) => proto::ChunkResponse {
-            found: true,
-            size: chunk_data.len() as u64,
-            data: chunk_data,
-        },
-        Err(_) => proto::ChunkResponse {
-            found: false,
-            size: 0,
-            data: vec![],
-        },
-    };
+    // Resolve chunk in a blocking thread to avoid stalling the async runtime
+    let resp = tokio::task::spawn_blocking(move || {
+        // Prefer serving compressed bytes directly (avoids decompress+recompress)
+        if store.has(&hash)
+            && let Ok(compressed) = store.get_compressed(&hash)
+        {
+            let decompressed_size = zstd::decode_all(compressed.as_slice())
+                .map(|d| d.len() as u64)
+                .unwrap_or(0);
+            return proto::ChunkResponse {
+                found: true,
+                size: decompressed_size,
+                data: compressed,
+                compressed: true,
+            };
+        }
+        // Fallback: try manifest/resolver path (returns decompressed data)
+        let resolver = ChunkResolver::new(manifest.as_deref(), &store);
+        match resolver.get(&hash) {
+            Ok(chunk_data) => proto::ChunkResponse {
+                found: true,
+                size: chunk_data.len() as u64,
+                data: chunk_data,
+                compressed: false,
+            },
+            Err(_) => proto::ChunkResponse {
+                found: false,
+                size: 0,
+                data: vec![],
+                compressed: false,
+            },
+        }
+    }).await?;
 
     let encoded = frame::encode_msg(&resp);
     send.write_all(&encoded).await?;

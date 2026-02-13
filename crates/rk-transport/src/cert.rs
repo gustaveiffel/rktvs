@@ -69,12 +69,19 @@ pub fn load_key(path: &Path) -> io::Result<PrivatePkcs8KeyDer<'static>> {
     Ok(PrivatePkcs8KeyDer::from(bytes))
 }
 
-/// Build a quinn ServerConfig from a certificate + key.
+/// Build a quinn ServerConfig from a certificate + key, with transport hardening.
 pub fn server_config(
     cert: CertificateDer<'static>,
     key: PrivatePkcs8KeyDer<'static>,
 ) -> Result<quinn::ServerConfig, rustls::Error> {
-    let server_config = quinn::ServerConfig::with_single_cert(vec![cert], key.into())?;
+    let mut server_config = quinn::ServerConfig::with_single_cert(vec![cert], key.into())?;
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(256u32.into());
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(300)).unwrap(),
+    ));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+    server_config.transport_config(Arc::new(transport));
     Ok(server_config)
 }
 

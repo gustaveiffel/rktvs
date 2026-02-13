@@ -25,6 +25,7 @@ pub struct LibraryRecord {
     pub endpoint: String,
     pub status: String,
     pub last_seen: Option<i64>,
+    pub cert_path: Option<String>,
 }
 
 /// Job record from the jobs table.
@@ -54,11 +55,12 @@ CREATE TABLE IF NOT EXISTS libraries (
     library_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     endpoint TEXT NOT NULL,
-    wg_pubkey BLOB NOT NULL,
+    wg_pubkey BLOB,
     status TEXT DEFAULT 'offline',
     last_seen INTEGER,
     last_catalog_version INTEGER DEFAULT 0,
-    trust_level TEXT DEFAULT 'full'
+    trust_level TEXT DEFAULT 'full',
+    cert_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tapes (
@@ -177,6 +179,22 @@ impl Catalog {
              PRAGMA busy_timeout = 5000;"
         )?;
         self.conn.execute_batch(SCHEMA)?;
+        self.migrate()?;
+        Ok(())
+    }
+
+    /// Run schema migrations for databases created by earlier versions.
+    fn migrate(&self) -> Result<()> {
+        // Migration: add cert_path column (v0.1 → v0.2).
+        // Ignore error if column already exists (fresh databases).
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE libraries ADD COLUMN cert_path TEXT;"
+        );
+        // Migrate data stashed in trust_level by the v0.1 MVP hack.
+        self.conn.execute_batch(
+            "UPDATE libraries SET cert_path = trust_level
+             WHERE trust_level != 'full' AND cert_path IS NULL;"
+        )?;
         Ok(())
     }
 
@@ -198,19 +216,10 @@ impl Catalog {
         endpoint: &str,
         cert_path: &str,
     ) -> Result<()> {
-        // Store cert_path in the endpoint field alongside the address.
-        // wg_pubkey is a placeholder (zeroed 32 bytes) for the MVP cert-pinning model.
-        let wg_placeholder = vec![0u8; 32];
         self.conn.execute(
-            "INSERT INTO libraries (library_id, display_name, endpoint, wg_pubkey, status)
+            "INSERT INTO libraries (library_id, display_name, endpoint, cert_path, status)
              VALUES (?1, ?2, ?3, ?4, 'offline')",
-            rusqlite::params![library_id, display_name, endpoint, wg_placeholder],
-        )?;
-        // Store cert path as a separate metadata — reuse endpoint for address,
-        // stash cert_path in trust_level (repurposed for MVP, schema untouched).
-        self.conn.execute(
-            "UPDATE libraries SET trust_level = ?1 WHERE library_id = ?2",
-            rusqlite::params![cert_path, library_id],
+            rusqlite::params![library_id, display_name, endpoint, cert_path],
         )?;
         Ok(())
     }
@@ -218,7 +227,7 @@ impl Catalog {
     /// List all registered libraries.
     pub fn list_libraries(&self) -> Result<Vec<LibraryRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT library_id, display_name, endpoint, status, last_seen
+            "SELECT library_id, display_name, endpoint, status, last_seen, cert_path
              FROM libraries ORDER BY library_id",
         )?;
         let rows = stmt
@@ -229,6 +238,7 @@ impl Catalog {
                     endpoint: row.get(2)?,
                     status: row.get(3)?,
                     last_seen: row.get(4)?,
+                    cert_path: row.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -238,7 +248,7 @@ impl Catalog {
     /// Get a single library by ID.
     pub fn get_library(&self, library_id: &str) -> Result<Option<LibraryRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT library_id, display_name, endpoint, status, last_seen
+            "SELECT library_id, display_name, endpoint, status, last_seen, cert_path
              FROM libraries WHERE library_id = ?1",
         )?;
         let mut rows = stmt.query_map(rusqlite::params![library_id], |row| {
@@ -248,6 +258,7 @@ impl Catalog {
                 endpoint: row.get(2)?,
                 status: row.get(3)?,
                 last_seen: row.get(4)?,
+                cert_path: row.get(5)?,
             })
         })?;
         match rows.next() {
@@ -257,27 +268,16 @@ impl Catalog {
         }
     }
 
-    /// Get the cert path stored for a library (stashed in trust_level for MVP).
-    pub fn get_library_cert_path(&self, library_id: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT trust_level FROM libraries WHERE library_id = ?1",
-        )?;
-        let mut rows = stmt.query_map(rusqlite::params![library_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        match rows.next() {
-            Some(Ok(path)) => Ok(Some(path)),
-            Some(Err(e)) => Err(e.into()),
-            None => Ok(None),
-        }
-    }
-
-    /// Remove a library by ID.
+    /// Remove a library and all its associated data (cascade delete).
     pub fn remove_library(&self, library_id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM libraries WHERE library_id = ?1",
-            rusqlite::params![library_id],
-        )?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM file_chunks WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute("DELETE FROM files WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute("DELETE FROM tape_versions WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute("DELETE FROM tapes WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute("DELETE FROM jobs WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.execute("DELETE FROM libraries WHERE library_id = ?1", rusqlite::params![library_id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -687,8 +687,8 @@ mod tests {
         let catalog = Catalog::open_in_memory().unwrap();
 
         // Add
-        catalog.add_library("hub1", "Hub One", "192.168.1.1:4443", "/certs/hub1.der").unwrap();
-        catalog.add_library("hub2", "Hub Two", "10.0.0.1:4443", "/certs/hub2.der").unwrap();
+        catalog.add_library("hub1", "Hub One", "192.168.1.1:4443", "certs/hub1.cert.der").unwrap();
+        catalog.add_library("hub2", "Hub Two", "10.0.0.1:4443", "certs/hub2.cert.der").unwrap();
 
         // List
         let libs = catalog.list_libraries().unwrap();
@@ -696,16 +696,13 @@ mod tests {
         assert_eq!(libs[0].library_id, "hub1");
         assert_eq!(libs[1].library_id, "hub2");
 
-        // Get
+        // Get — includes cert_path
         let lib = catalog.get_library("hub1").unwrap().unwrap();
         assert_eq!(lib.display_name, "Hub One");
         assert_eq!(lib.endpoint, "192.168.1.1:4443");
         assert_eq!(lib.status, "offline");
         assert!(lib.last_seen.is_none());
-
-        // Cert path
-        let cert = catalog.get_library_cert_path("hub1").unwrap().unwrap();
-        assert_eq!(cert, "/certs/hub1.der");
+        assert_eq!(lib.cert_path.as_deref(), Some("certs/hub1.cert.der"));
 
         // Nonexistent
         assert!(catalog.get_library("nope").unwrap().is_none());
@@ -726,10 +723,41 @@ mod tests {
     }
 
     #[test]
+    fn remove_library_cascade_deletes_child_data() {
+        let catalog = Catalog::open_in_memory().unwrap();
+
+        // Set up a library with files, chunks, tapes, jobs
+        catalog.add_library("hub-x", "Hub X", "10.0.0.1:4443", "certs/hubx.cert.der").unwrap();
+
+        let hash = blake3::hash(b"data");
+        let chunks = vec![crate::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 100,
+            compressed_size: 80,
+        }];
+        catalog.record_file("hub-x", "tape1", "/file.bin", 1, 100, None, None, 1, &chunks).unwrap();
+        catalog.create_job("j1", "hub-x", "tape1", "fetch", 1, Some("/file.bin"), Some(1), Some(100)).unwrap();
+
+        // Verify data exists
+        assert!(!catalog.get_file_chunks("hub-x", "tape1", "/file.bin").unwrap().is_empty());
+        assert!(catalog.get_job("j1").unwrap().is_some());
+
+        // Remove with cascade
+        catalog.remove_library("hub-x").unwrap();
+
+        // All child data should be gone
+        assert!(catalog.get_library("hub-x").unwrap().is_none());
+        assert!(catalog.get_file_chunks("hub-x", "tape1", "/file.bin").unwrap().is_empty());
+        assert!(catalog.list_files("hub-x", "tape1", "/").unwrap().is_empty());
+        assert!(catalog.get_job("j1").unwrap().is_none());
+    }
+
+    #[test]
     fn library_duplicate_add_errors() {
         let catalog = Catalog::open_in_memory().unwrap();
-        catalog.add_library("hub1", "Hub One", "1.2.3.4:4443", "/cert.der").unwrap();
-        let result = catalog.add_library("hub1", "Hub One Again", "5.6.7.8:4443", "/cert2.der");
+        catalog.add_library("hub1", "Hub One", "1.2.3.4:4443", "certs/hub1.cert.der").unwrap();
+        let result = catalog.add_library("hub1", "Hub One Again", "5.6.7.8:4443", "certs/hub1b.cert.der");
         assert!(result.is_err());
     }
 

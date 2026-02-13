@@ -13,6 +13,12 @@ use crate::proto;
 /// 16 MB max chunk + protobuf overhead + safety margin.
 const MAX_CHUNK_RESPONSE: usize = 17 * 1024 * 1024;
 
+/// Result of a chunk fetch, preserving the compressed flag from the wire.
+pub struct ChunkFetchResult {
+    pub data: Vec<u8>,
+    pub compressed: bool,
+}
+
 pub struct Satellite {
     connection: Connection,
     pub satellite_id: String,
@@ -62,7 +68,9 @@ impl Satellite {
     }
 
     /// Fetch a single chunk by BLAKE3 hash from the hub.
-    pub async fn fetch_chunk(&self, hash: &blake3::Hash) -> anyhow::Result<Option<Vec<u8>>> {
+    /// Returns `None` if the chunk was not found on the hub.
+    /// The `ChunkFetchResult.compressed` flag indicates whether data is zstd-compressed.
+    pub async fn fetch_chunk(&self, hash: &blake3::Hash) -> anyhow::Result<Option<ChunkFetchResult>> {
         let (mut send, mut recv) = self.connection.open_bi().await?;
 
         // Write stream tag
@@ -81,7 +89,10 @@ impl Satellite {
         let resp = proto::ChunkResponse::decode_length_delimited(resp_data.as_slice())?;
 
         if resp.found {
-            Ok(Some(resp.data))
+            Ok(Some(ChunkFetchResult {
+                data: resp.data,
+                compressed: resp.compressed,
+            }))
         } else {
             Ok(None)
         }

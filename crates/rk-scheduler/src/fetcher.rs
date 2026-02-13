@@ -42,24 +42,31 @@ pub async fn fetch_file(
             skipped_chunks += 1;
             info!(hash = %chunk.hash, "chunk already local, skipping");
         } else {
-            let data = satellite
+            let resp = satellite
                 .fetch_chunk(&chunk.hash)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("hub does not have chunk {}", chunk.hash))?;
 
-            // Verify hash before storing
-            let actual_hash = blake3::hash(&data);
-            if actual_hash != chunk.hash {
-                anyhow::bail!(
-                    "hash mismatch for chunk {}: expected {}, got {}",
-                    i, chunk.hash, actual_hash
-                );
+            bytes_transferred += resp.data.len() as u64;
+            let data_len = resp.data.len();
+
+            if resp.compressed {
+                // Hub sent zstd-compressed bytes — store directly (put_compressed verifies)
+                store.put_compressed(&chunk.hash, &resp.data)?;
+            } else {
+                // Hub sent decompressed bytes — verify hash and store
+                let actual_hash = blake3::hash(&resp.data);
+                if actual_hash != chunk.hash {
+                    anyhow::bail!(
+                        "hash mismatch for chunk {}: expected {}, got {}",
+                        i, chunk.hash, actual_hash
+                    );
+                }
+                store.put(&resp.data)?;
             }
 
-            store.put(&data)?;
             fetched_chunks += 1;
-            bytes_transferred += data.len() as u64;
-            info!(hash = %chunk.hash, size = data.len(), "fetched chunk {}/{}", i + 1, total_chunks);
+            info!(hash = %chunk.hash, size = data_len, "fetched chunk {}/{}", i + 1, total_chunks);
         }
 
         // Update job progress if tracking

@@ -28,7 +28,12 @@ async fn fetch_chunk_over_localhost() {
 
     let fetched = sat.fetch_chunk(&hash).await.unwrap();
     assert!(fetched.is_some(), "chunk should be found");
-    assert_eq!(fetched.unwrap(), data);
+    let result = fetched.unwrap();
+    // Hub has the chunk in store, so it should send compressed bytes
+    assert!(result.compressed, "chunk from store should be compressed on wire");
+    // Decompress and verify content matches
+    let decompressed = zstd::decode_all(result.data.as_slice()).unwrap();
+    assert_eq!(decompressed, data);
 
     // Fetch a nonexistent chunk
     let fake_hash = blake3::hash(b"nonexistent");

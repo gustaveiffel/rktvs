@@ -19,4 +19,5 @@ message ChunkResponse {
   bool found = 1;
   bytes data = 2;
   uint64 size = 3;
+  bool compressed = 4;
 }

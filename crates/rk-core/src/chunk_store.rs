@@ -73,6 +73,40 @@ impl ChunkStore {
         Ok(meta.len() as usize)
     }
 
+    /// Retrieve raw zstd-compressed bytes from disk (no decompress, no hash verify).
+    /// Used for compressed wire transfer — avoids decompress/recompress round-trip.
+    pub fn get_compressed(&self, hash: &blake3::Hash) -> Result<Vec<u8>> {
+        let path = self.chunk_path(hash);
+        if !path.exists() {
+            return Err(crate::Error::ChunkNotFound(*hash));
+        }
+        Ok(fs::read(&path)?)
+    }
+
+    /// Store pre-compressed zstd bytes. Verifies integrity by decompressing and
+    /// checking the BLAKE3 hash before writing. Returns the verified hash.
+    pub fn put_compressed(&self, hash: &blake3::Hash, compressed: &[u8]) -> Result<blake3::Hash> {
+        let path = self.chunk_path(hash);
+        if path.exists() {
+            return Ok(*hash);
+        }
+        // Verify: decompress and check hash before storing
+        let data = zstd::decode_all(compressed)?;
+        let actual = blake3::hash(&data);
+        if &actual != hash {
+            return Err(crate::Error::HashMismatch {
+                expected: *hash,
+                actual,
+            });
+        }
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent)?;
+        let tmp_path = parent.join(format!("{}.zst.tmp", hash.to_hex()));
+        fs::write(&tmp_path, compressed)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(*hash)
+    }
+
     pub fn chunk_path(&self, hash: &blake3::Hash) -> PathBuf {
         let hex = hash.to_hex();
         let hex = hex.as_str();
@@ -140,6 +174,51 @@ mod tests {
 
         let result = store.get(&hash);
         assert!(matches!(result, Err(crate::Error::HashMismatch { .. })));
+    }
+
+    #[test]
+    fn get_compressed_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+
+        let data = b"compressed roundtrip test data";
+        let hash = store.put(data).unwrap();
+
+        let compressed = store.get_compressed(&hash).unwrap();
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn put_compressed_stores_and_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+
+        let data = b"put_compressed test payload";
+        let hash = blake3::hash(data);
+        let compressed = zstd::encode_all(&data[..], 3).unwrap();
+
+        let result = store.put_compressed(&hash, &compressed).unwrap();
+        assert_eq!(result, hash);
+        assert!(store.has(&hash));
+
+        let retrieved = store.get(&hash).unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[test]
+    fn put_compressed_rejects_corrupt_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChunkStore::new(dir.path().to_path_buf());
+
+        let data = b"original";
+        let wrong_data = b"tampered";
+        let hash = blake3::hash(data);
+        let compressed = zstd::encode_all(&wrong_data[..], 3).unwrap();
+
+        let result = store.put_compressed(&hash, &compressed);
+        assert!(matches!(result, Err(crate::Error::HashMismatch { .. })));
+        assert!(!store.has(&hash));
     }
 
     #[test]

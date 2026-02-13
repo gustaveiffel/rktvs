@@ -2,14 +2,14 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use rk_core::catalog::Catalog;
+use rk_core::catalog::{Catalog, LibraryRecord};
 use rk_core::chunk_store::ChunkStore;
 use rk_core::indexer::IndexConfig;
 use rk_core::manifest::Manifest;
@@ -189,6 +189,52 @@ fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
     }
     let (tape, path) = parse_tape_path(rest)?;
     Ok((library, tape, path))
+}
+
+/// Resolve a relative cert path against the data directory.
+fn resolve_cert_path(data_dir: &Path, rel: &str) -> PathBuf {
+    data_dir.join(rel)
+}
+
+/// Extract server_name for TLS SNI from an endpoint string.
+/// For IP-based endpoints, returns the IP as a string.
+fn extract_hostname(endpoint: &str) -> Result<String> {
+    let addr: SocketAddr = endpoint.parse()
+        .with_context(|| format!("invalid endpoint: {endpoint}"))?;
+    Ok(addr.ip().to_string())
+}
+
+/// Connect to a library: load cert, build TLS config, establish QUIC connection.
+async fn connect_to_library(
+    catalog: &Catalog,
+    data_dir: &Path,
+    library_id: &str,
+    satellite_id: &str,
+) -> Result<(rk_transport::satellite::Satellite, LibraryRecord)> {
+    let lib = catalog.get_library(library_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown library '{library_id}'"))?;
+    let cert_rel = lib.cert_path.as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no cert path for library '{library_id}'"))?;
+    let cert_abs = resolve_cert_path(data_dir, cert_rel);
+
+    let hub_cert = cert::load_cert(&cert_abs)
+        .with_context(|| format!("loading cert for '{library_id}'"))?;
+    let client_config = cert::client_config(&hub_cert)
+        .context("building TLS client config")?;
+
+    let addr: SocketAddr = lib.endpoint.parse()
+        .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
+    let server_name = extract_hostname(&lib.endpoint)?;
+
+    let satellite = tokio::time::timeout(
+        Duration::from_secs(10),
+        rk_transport::satellite::Satellite::connect(addr, &server_name, client_config, satellite_id),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("connection timed out after 10s"))?
+    .context("connecting to hub")?;
+
+    Ok((satellite, lib))
 }
 
 #[tokio::main]
@@ -400,6 +446,11 @@ async fn main() -> Result<()> {
         Commands::Library { command } => match command {
             LibraryCommands::Add { id, endpoint, cert: cert_file } => {
                 validate_library_id(&id)?;
+
+                // Validate endpoint format early
+                let _: SocketAddr = endpoint.parse()
+                    .with_context(|| format!("invalid endpoint '{endpoint}': expected host:port (e.g. 127.0.0.1:4443)"))?;
+
                 let src = PathBuf::from(&cert_file);
                 if !src.exists() {
                     bail!("certificate file not found: {}", cert_file);
@@ -412,7 +463,9 @@ async fn main() -> Result<()> {
                 std::fs::copy(&src, &dest)
                     .with_context(|| format!("copying cert to {}", dest.display()))?;
 
-                catalog.add_library(&id, &id, &endpoint, &dest.to_string_lossy())
+                // Store relative cert path (portable across data-dir moves)
+                let rel_cert = format!("certs/{id}.cert.der");
+                catalog.add_library(&id, &id, &endpoint, &rel_cert)
                     .with_context(|| format!("adding library '{id}'"))?;
 
                 eprintln!("added library '{id}' at {endpoint}");
@@ -448,24 +501,9 @@ async fn main() -> Result<()> {
             }
 
             LibraryCommands::Ping { id } => {
-                let lib = catalog.get_library(&id)?
-                    .ok_or_else(|| anyhow::anyhow!("unknown library '{id}'"))?;
-                let cert_path_str = catalog.get_library_cert_path(&id)?
-                    .ok_or_else(|| anyhow::anyhow!("no cert path for library '{id}'"))?;
-
-                let hub_cert = cert::load_cert(std::path::Path::new(&cert_path_str))
-                    .with_context(|| format!("loading cert for '{id}'"))?;
-                let client_config = cert::client_config(&hub_cert)
-                    .context("building TLS client config")?;
-
-                let addr: SocketAddr = lib.endpoint.parse()
-                    .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
-
                 let start = Instant::now();
-                match rk_transport::satellite::Satellite::connect(
-                    addr, "localhost", client_config, "rk-ping",
-                ).await {
-                    Ok(_sat) => {
+                match connect_to_library(&catalog, &data_dir, &id, "rk-ping").await {
+                    Ok((_sat, _lib)) => {
                         let elapsed = start.elapsed();
                         catalog.update_library_status(&id, "online")?;
                         eprintln!("ok ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
@@ -482,19 +520,6 @@ async fn main() -> Result<()> {
 
         Commands::Fetch { path, grade } => {
             let (library_id, tape, file_path) = parse_library_tape_path(&path)?;
-
-            let lib = catalog.get_library(library_id)?
-                .ok_or_else(|| anyhow::anyhow!("unknown library '{library_id}'"))?;
-            let cert_path_str = catalog.get_library_cert_path(library_id)?
-                .ok_or_else(|| anyhow::anyhow!("no cert path for library '{library_id}'"))?;
-
-            let hub_cert = cert::load_cert(std::path::Path::new(&cert_path_str))
-                .with_context(|| format!("loading cert for '{library_id}'"))?;
-            let client_config = cert::client_config(&hub_cert)
-                .context("building TLS client config")?;
-
-            let addr: SocketAddr = lib.endpoint.parse()
-                .with_context(|| format!("invalid endpoint: {}", lib.endpoint))?;
 
             // Parse grade
             let grade_val = match grade.to_lowercase().as_str() {
@@ -527,10 +552,8 @@ async fn main() -> Result<()> {
 
             eprintln!("fetching {path} ({} chunks, {} bytes)", chunks.len(), total_bytes);
 
-            // Connect to hub
-            let satellite = rk_transport::satellite::Satellite::connect(
-                addr, "localhost", client_config, "rk-fetch",
-            ).await.context("connecting to hub")?;
+            // Connect to hub (with 10s timeout built into connect_to_library)
+            let (satellite, _lib) = connect_to_library(&catalog, &data_dir, library_id, "rk-fetch").await?;
 
             catalog.update_job_progress(&job_id, 0, "running")?;
 
@@ -546,17 +569,32 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                // Fetch from hub
-                match satellite.fetch_chunk(&chunk.hash).await? {
-                    Some(data) => {
-                        bytes_transferred += data.len() as u64;
-                        let stored_hash = store.put(&data).context("storing fetched chunk")?;
-                        if stored_hash != chunk.hash {
-                            catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
-                            bail!(
-                                "hash mismatch for chunk {}: expected {}, got {}",
-                                i, chunk.hash.to_hex(), stored_hash.to_hex()
-                            );
+                // Fetch from hub (with 30s timeout per chunk)
+                let resp = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    satellite.fetch_chunk(&chunk.hash),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("chunk fetch timed out after 30s"))?
+                .context("fetching chunk")?;
+
+                match resp {
+                    Some(resp) => {
+                        bytes_transferred += resp.data.len() as u64;
+                        if resp.compressed {
+                            // Hub sent compressed zstd bytes — store directly
+                            store.put_compressed(&chunk.hash, &resp.data)
+                                .context("storing compressed chunk")?;
+                        } else {
+                            // Hub sent decompressed bytes — compress and store
+                            let stored_hash = store.put(&resp.data).context("storing fetched chunk")?;
+                            if stored_hash != chunk.hash {
+                                catalog.update_job_progress(&job_id, (i + 1) as i64, "error")?;
+                                bail!(
+                                    "hash mismatch for chunk {}: expected {}, got {}",
+                                    i, chunk.hash.to_hex(), stored_hash.to_hex()
+                                );
+                            }
                         }
                         fetched += 1;
                     }
