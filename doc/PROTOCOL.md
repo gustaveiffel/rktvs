@@ -15,9 +15,13 @@ library. Streams are multiplexed over that connection. Messages are protobuf
    certificate and private key are stored as DER files in the hub's data
    directory (`hub.cert.der`, `hub.key.der`).
 3. The satellite pins the hub's certificate at `rk library add --cert`. The
-   cert is copied to `<data-dir>/certs/<library-id>.cert.der` and used for
-   all subsequent connections to that library.
-4. Trust model: **Trust On First Use (TOFU).** The hub's cert is transferred
+   cert is copied to `<data-dir>/certs/<library-id>.cert.der` and stored as a
+   **relative path** (`certs/<id>.cert.der`) in the catalog. This makes the
+   data directory relocatable.
+4. The endpoint is validated at `library add` time: it must be a valid
+   `host:port` string. The hostname is extracted for TLS Server Name
+   Indication (SNI).
+5. Trust model: **Trust On First Use (TOFU).** The hub's cert is transferred
    out-of-band (copied manually, USB key, etc.) and pinned by the satellite.
    There is no CA.
 
@@ -87,14 +91,25 @@ message ChunkRequest {
 
 message ChunkResponse {
   bool found = 1;
-  bytes data = 2;   // raw (decompressed) chunk data
-  uint64 size = 3;
+  bytes data = 2;        // chunk data (compressed or raw, see `compressed` flag)
+  uint64 size = 3;       // decompressed size in bytes
+  bool compressed = 4;   // true if `data` is zstd-compressed
 }
 ```
 
-Chunks are stored compressed (zstd) on disk but transmitted **decompressed** in
-`ChunkResponse.data`. The satellite compresses again when storing locally.
-Transmitting compressed data is a planned future optimization.
+Chunks in the store are zstd-compressed on disk. The hub serves them in two
+modes depending on how the chunk is resolved:
+
+- **From chunk store:** `data` contains the raw zstd-compressed bytes as stored
+  on disk, `compressed = true`. This avoids a decompress/recompress round-trip
+  and saves bandwidth -- exactly the resource rk is designed to conserve.
+- **From manifest (zero-copy path):** `data` contains decompressed bytes read
+  from the source file, `compressed = false`.
+
+The satellite checks the `compressed` flag: if true, it calls
+`ChunkStore::put_compressed()` (which verifies the hash by decompressing
+internally); if false, it verifies the BLAKE3 hash and calls
+`ChunkStore::put()`.
 
 ## 7. Flow example
 
@@ -138,8 +153,18 @@ Multiple chunk request streams can be opened concurrently (QUIC multiplexing).
 - Fetched chunks are verified against their BLAKE3 hash before storage.
 - Certificate fingerprint (BLAKE3 of cert DER) displayed at `hub init`.
 
+**Transport hardening (hub side):**
+- Max 256 concurrent bidirectional streams per connection.
+- 300-second idle timeout (connection closed if no activity).
+- 15-second keep-alive interval.
+- Max 1024 concurrent connections (enforced via semaphore).
+- Chunk resolution runs on `spawn_blocking` to avoid stalling the async runtime.
+
+**Transport hardening (satellite side):**
+- 10-second connect timeout when establishing a QUIC connection.
+- 30-second per-chunk fetch timeout.
+
 **Planned:**
 - WireGuard public key as node identity.
 - Mutual TLS authentication.
 - Certificate expiration and rotation.
-- Connection/stream limits and timeouts on hub.

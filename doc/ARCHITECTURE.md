@@ -85,13 +85,19 @@ satellite --> QUIC --> hub
 ```
 
 1. The satellite opens a QUIC connection to the hub (via `quinn`) using a
-   pinned self-signed certificate.
+   pinned self-signed certificate (10-second connect timeout).
 2. A control stream (`0x00` tag) carries a protobuf `Handshake` /
    `HandshakeAck` exchange.
 3. For each missing chunk the satellite opens a new bidi stream (`0x01` tag),
    sends a `ChunkRequest` (32-byte BLAKE3 hash), and receives a
-   `ChunkResponse` with the raw (decompressed) data.
-4. The satellite verifies the BLAKE3 hash before storing locally.
+   `ChunkResponse`. The response includes a `compressed` flag:
+   - **compressed = true:** data is zstd-compressed bytes read directly from
+     the hub's chunk store (no decompress/recompress round-trip). The satellite
+     calls `put_compressed()` which verifies the hash internally.
+   - **compressed = false:** data is decompressed bytes from the manifest
+     (zero-copy path). The satellite verifies the BLAKE3 hash and calls `put()`.
+4. Chunk resolution on the hub runs via `spawn_blocking` to avoid stalling the
+   async runtime during disk I/O.
 5. Chunks already present in the local store are skipped, providing resume
    support after interrupted transfers.
 
@@ -141,7 +147,7 @@ Nine tables, all created on first open:
 
 | Table | Purpose |
 |---|---|
-| `libraries` | Known peers (endpoint, cert path, trust level) |
+| `libraries` | Known peers (endpoint, cert_path for pinned cert, trust level) |
 | `tapes` | Named collections of files within a library |
 | `files` | File metadata (path, type, size, mtime, mode, version); soft-deleted via `deleted_at` |
 | `file_chunks` | Ordered mapping of file to chunk hashes (PK: library, tape, path, index) |
@@ -154,6 +160,15 @@ Nine tables, all created on first open:
 The catalog is the source of truth for metadata. Chunk data is lazy-fetched --
 the catalog may reference chunks not yet present in the local store.
 
+The `libraries` table includes a `cert_path` column storing the **relative**
+path to the pinned certificate (e.g., `certs/myhub.cert.der`). Relative paths
+make the data directory relocatable. Schema migrations (`Catalog::migrate()`)
+handle upgrading databases from earlier versions.
+
+`remove_library()` performs a **cascade delete**: it removes the library row
+and all associated files, file_chunks, tapes, tape_versions, and jobs in a
+single transaction.
+
 PRAGMAs: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`.
 
 ## Wire protocol
@@ -163,7 +178,7 @@ QUIC (via `quinn`). Each bidirectional stream begins with a single-byte tag:
 | Tag | Name | Request | Response |
 |---|---|---|---|
 | `0x00` | CONTROL | `Handshake` (protobuf, length-delimited) | `HandshakeAck` |
-| `0x01` | CHUNK_REQUEST | `ChunkRequest` (32-byte hash) | `ChunkResponse` (found flag + data) |
+| `0x01` | CHUNK_REQUEST | `ChunkRequest` (32-byte hash) | `ChunkResponse` (found flag + data + compressed flag) |
 
 Protobuf definitions are in `proto/rk.proto`, compiled at build time by
 `prost-build` (see `crates/rk-transport/build.rs`).
@@ -217,6 +232,7 @@ chunks, skip local ones, fetch and verify missing ones, update job progress.
 | zstd | gzip | Better compression ratio at higher speed |
 | Protobuf | Text protocols | Typed fields, compact encoding, schema versioning |
 | Self-signed + pinning | CA-signed certs | No CA infrastructure needed for field deployments |
+| Compressed wire transfer | Decompress/recompress | Saves bandwidth on hostile links -- exactly the resource rk conserves |
 
 ## Crate dependency graph
 

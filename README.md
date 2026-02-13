@@ -153,7 +153,7 @@ Key concepts:
 - **Grade** -- transfer priority: Urgent, Normal, Batch, Background.
 - **CostTier** -- link classification: Free, Cheap, Metered, Expensive.
 
-See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md), [doc/PROTOCOL.md](doc/PROTOCOL.md), [doc/TAPES.md](doc/TAPES.md), [doc/COMPARED.md](doc/COMPARED.md), and [doc/GUIDE.md](doc/GUIDE.md) for details.
+See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md), [doc/PROTOCOL.md](doc/PROTOCOL.md), [doc/TAPES.md](doc/TAPES.md), [doc/COMPARED.md](doc/COMPARED.md), [doc/GUIDE.md](doc/GUIDE.md), and [doc/API.md](doc/API.md) for details.
 
 ## Status
 
@@ -170,16 +170,20 @@ What works today:
 - TLS with self-signed certificates and cert pinning (TOFU model)
 - Hub init/serve and library add/list/remove/ping CLI commands
 - Remote chunk fetch with hash verification and chunk-level resume
+- Compressed wire transfer (chunks sent zstd-compressed from store, no decompress/recompress)
+- Connection/stream limits (256 streams, 1024 connections) and timeouts (10s connect, 30s chunk, 300s idle)
+- Endpoint validation at library add, relative cert path storage
+- Cascade delete on library remove (files, chunks, tapes, jobs)
+- Schema migrations for upgrading from earlier database versions
 - Protobuf wire protocol
 - Grade x CostTier scheduling matrix
 - Transfer cost estimation without data transfer
 - Resumable chunk-level fetching with job tracking
-- 80 tests passing across all crates, 0 clippy warnings
+- 84 tests passing across all crates, 0 clippy warnings
 
 What is planned:
 
 - Catalog sync between hub and satellite (satellite currently needs metadata pre-populated)
-- Compressed wire transfer (chunks are currently decompressed for transfer)
 - Connection reuse and 0-RTT reconnect
 - Link cost auto-detection
 - Tape ACL enforcement

@@ -49,7 +49,7 @@ cp target/release/rk ~/.local/bin/    # or /usr/local/bin/
 
 ```bash
 rk --help
-cargo test --workspace    # 80 tests, should all pass
+cargo test --workspace    # 84 tests, should all pass
 ```
 
 ---
@@ -345,11 +345,15 @@ rk library add myhub 192.168.1.10:4443 --cert /path/to/hub.cert.der
 
 ```
 added library 'myhub' at 192.168.1.10:4443
-  cert: /home/user/.rk/certs/myhub.cert.der
+  cert: certs/myhub.cert.der
 ```
 
-The certificate is copied into the satellite's data directory. The original
-file can be deleted afterward.
+The certificate is copied into the satellite's data directory and stored as a
+**relative path** (e.g., `certs/myhub.cert.der`). This makes the data directory
+relocatable. The original cert file can be deleted afterward.
+
+The endpoint must be a valid `host:port` string. The hostname is extracted for
+TLS Server Name Indication (SNI). Invalid endpoints are rejected at add time.
 
 Library IDs must be alphanumeric with hyphens and underscores only
 (e.g., `my-hub`, `office_west`, `hub01`).
@@ -386,7 +390,9 @@ pinned certificate. On success, the library's status is updated to "online".
 rk library remove myhub
 ```
 
-This removes the library from the catalog and deletes the stored certificate.
+This performs a **cascade delete**: it removes the library from the catalog,
+deletes all associated data (files, file_chunks, tapes, tape_versions, jobs),
+and removes the stored certificate file.
 
 ---
 
@@ -402,6 +408,16 @@ rk fetch myhub:project/path/to/file.bin --grade normal
 fetching myhub:project/path/to/file.bin (125 chunks, 524288000 bytes)
 done: 120 fetched, 5 skipped (already local), 503316480 bytes transferred
 ```
+
+Chunks are transferred **compressed** when possible. If the hub has the chunk
+in its chunk store, it sends the zstd-compressed bytes directly -- no
+decompress/recompress round-trip. This saves significant bandwidth on hostile
+links. Chunks resolved from the manifest (zero-copy path) are sent
+decompressed.
+
+The connection has a **10-second timeout**. Each individual chunk fetch has a
+**30-second timeout**. If either is exceeded, the operation fails with an error
+(and can be resumed later -- chunks already fetched are skipped).
 
 ### Path format
 
@@ -665,6 +681,21 @@ The hub returned data that doesn't match the expected BLAKE3 hash. This
 indicates data corruption in transit or on the hub. The fetch is aborted to
 prevent storing corrupt data.
 
+### "connection timed out"
+
+The satellite could not establish a QUIC connection to the hub within 10
+seconds. Check:
+- Is the hub running and reachable?
+- Is the endpoint address correct (verify with `rk library list`)?
+- Is UDP traffic allowed on the port? QUIC uses UDP, not TCP.
+- Is the network particularly slow? The 10-second timeout is not configurable.
+
+### "chunk fetch timed out"
+
+A single chunk fetch took longer than 30 seconds. This can happen on very slow
+links with large chunks. The fetch can be retried -- already-fetched chunks
+will be skipped automatically.
+
 ### Enabling debug logging
 
 rk uses the `tracing` framework. Set the `RUST_LOG` environment variable:
@@ -680,14 +711,10 @@ RUST_LOG=rk_transport=trace rk library ping myhub
 
 - **No catalog sync.** Satellites need metadata pre-populated. This is the most
   significant gap and the next planned feature.
-- **No compressed wire transfer.** Chunks are decompressed on the hub and
-  recompressed on the satellite. This wastes bandwidth -- exactly the resource
-  rk is designed to conserve.
 - **Single connection per fetch.** Each `rk fetch` creates a new QUIC endpoint.
   Connection reuse and 0-RTT reconnect are not yet implemented.
 - **No client authentication.** Any client with the hub's public certificate
   can connect. Mutual TLS and auth tokens are planned.
-- **No connection timeouts.** A dead hub endpoint will hang indefinitely.
 - **No parallel chunk fetching.** Chunks are fetched one at a time.
 - **No cache eviction.** The chunk store grows without bound. Manual cleanup
   is required.
