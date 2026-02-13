@@ -126,6 +126,9 @@ enum LibraryCommands {
         /// Path to the hub's certificate (.der file)
         #[arg(long)]
         cert: String,
+        /// Replace existing library (removes old entry first)
+        #[arg(long)]
+        force: bool,
     },
     /// List known libraries
     List,
@@ -454,7 +457,7 @@ async fn main() -> Result<()> {
         // ── Library commands ────────────────────────────────
 
         Commands::Library { command } => match command {
-            LibraryCommands::Add { id, endpoint, cert: cert_file } => {
+            LibraryCommands::Add { id, endpoint, cert: cert_file, force } => {
                 validate_library_id(&id)?;
 
                 // Validate endpoint format early
@@ -464,6 +467,21 @@ async fn main() -> Result<()> {
                 let src = PathBuf::from(&cert_file);
                 if !src.exists() {
                     bail!("certificate file not found: {}", cert_file);
+                }
+
+                // Check for existing library before touching anything
+                let exists = catalog.get_library(&id)?.is_some();
+                if exists && !force {
+                    bail!(
+                        "library '{id}' already exists. Use --force to replace it."
+                    );
+                }
+                if exists {
+                    catalog.remove_library(&id)?;
+                    let old_cert = data_dir.join("certs").join(format!("{id}.cert.der"));
+                    if old_cert.exists() {
+                        std::fs::remove_file(&old_cert)?;
+                    }
                 }
 
                 // Copy cert into data-dir/certs/<id>.cert.der
@@ -476,10 +494,14 @@ async fn main() -> Result<()> {
                 // Store relative cert path (portable across data-dir moves)
                 let rel_cert = format!("certs/{id}.cert.der");
                 catalog.add_library(&id, &id, &endpoint, &rel_cert)
-                    .with_context(|| format!("adding library '{id}'"))?;
+                    .context("adding library")?;
 
-                eprintln!("added library '{id}' at {endpoint}");
-                eprintln!("  cert: {}", dest.display());
+                if exists {
+                    eprintln!("replaced library '{id}' at {endpoint}");
+                } else {
+                    eprintln!("added library '{id}' at {endpoint}");
+                }
+                eprintln!("  cert: {rel_cert}");
             }
 
             LibraryCommands::List => {
