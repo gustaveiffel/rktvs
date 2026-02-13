@@ -1,0 +1,40 @@
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/gustaveiffel/rktvs"
+rust-version = "1.85"
+keywords = ["file-transfer", "quic", "content-addressed", "satellite", "chunking"]
+categories = ["network-programming", "command-line-utilities"]
+
+[package]
+name = "rk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Content-addressed file delivery for hostile networks"
+readme = "README.md"
+
+[[bin]]
+name = "rk"
+path = "src/main.rs"
+
+[dependencies]
+rk-core = { path = "crates/rk-core" }
+rk-tar = { path = "crates/rk-tar" }
+rk-scheduler = { path = "crates/rk-scheduler" }
+rk-transport = { path = "crates/rk-transport" }
+blake3 = "1.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+anyhow = "1.0"
+dirs-next = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[workspace]
+resolver = "2"
+members = ["crates/rk-core", "crates/rk-tar", "crates/rk-transport", "crates/rk-scheduler"]
