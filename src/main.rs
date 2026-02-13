@@ -103,6 +103,9 @@ enum HubCommands {
         /// Listen address (used for certificate SANs)
         #[arg(long, default_value = "0.0.0.0:4443")]
         listen: String,
+        /// Additional Subject Alternative Names (IPs or hostnames)
+        #[arg(long = "san")]
+        sans: Vec<String>,
     },
     /// Start the hub server
     Serve {
@@ -369,7 +372,7 @@ async fn main() -> Result<()> {
         // ── Hub commands ────────────────────────────────────
 
         Commands::Hub { command } => match command {
-            HubCommands::Init { listen } => {
+            HubCommands::Init { listen, sans: extra_sans } => {
                 let cert_path = data_dir.join("hub.cert.der");
                 let key_path = data_dir.join("hub.key.der");
 
@@ -382,15 +385,21 @@ async fn main() -> Result<()> {
                 }
 
                 // Build SANs: always include localhost + 127.0.0.1,
-                // plus the listen address host if it's not a wildcard.
+                // plus the listen address host if it's not a wildcard,
+                // plus any extra SANs from --san flags.
                 let mut sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
                 if let Some(host) = listen.split(':').next()
                     && host != "0.0.0.0" && host != "::" && !sans.contains(&host.to_string())
                 {
                     sans.push(host.to_string());
                 }
+                for san in &extra_sans {
+                    if !sans.contains(san) {
+                        sans.push(san.clone());
+                    }
+                }
 
-                let (hub_cert, hub_key) = cert::generate_self_signed_for(sans)
+                let (hub_cert, hub_key) = cert::generate_self_signed_for(sans.clone())
                     .context("generating self-signed certificate")?;
 
                 cert::save_cert(&hub_cert, &cert_path)
@@ -403,6 +412,7 @@ async fn main() -> Result<()> {
                 eprintln!("  cert:        {}", cert_path.display());
                 eprintln!("  key:         {}", key_path.display());
                 eprintln!("  fingerprint: {}", fingerprint.to_hex());
+                eprintln!("  sans:        {}", sans.join(", "));
                 eprintln!("  listen:      {}", listen);
                 eprintln!();
                 eprintln!("share {} with satellites to connect", cert_path.display());
@@ -510,7 +520,7 @@ async fn main() -> Result<()> {
                     }
                     Err(e) => {
                         catalog.update_library_status(&id, "offline")?;
-                        bail!("ping failed: {e}");
+                        bail!("ping failed: {e:#}");
                     }
                 }
             }
