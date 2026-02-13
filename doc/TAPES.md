@@ -60,21 +60,6 @@ Check how much a transfer would cost before fetching anything:
 rk estimate project-x/data/big-model.bin
 ```
 
-### Index in-place (zero-copy)
-
-Reference files without copying them into the chunk store:
-
-```bash
-rk index --tape project-x /data/project-x/
-```
-
-Verify that indexed files are intact:
-
-```bash
-rk verify --tape project-x
-rk verify --tape project-x --blake3   # full hash verification
-```
-
 ### Future commands (not yet implemented)
 
 ```bash
@@ -88,18 +73,18 @@ rk tape versions <name>
 
 The `tapes` table tracks each tape:
 
-| Column              | Purpose                                 |
-|---------------------|-----------------------------------------|
-| `library_id`        | Library that owns the tape (PK part 1)  |
+| Column              | Purpose                                    |
+|---------------------|--------------------------------------------|
+| `library_id`        | Library that owns the tape (PK part 1)     |
 | `tape_name`         | Unique name within the library (PK part 2) |
-| `description`       | Human-readable description              |
-| `owner`             | Node that created the tape              |
-| `permission`        | Default permission level                |
-| `catalog_version`   | Current version counter                 |
-| `merkle_root`       | Root hash of the tape's Merkle tree     |
-| `last_sync`         | Unix timestamp of last catalog sync     |
-| `total_files`       | File count (denormalized for display)   |
-| `total_size`        | Total size in bytes (denormalized)      |
+| `description`       | Human-readable description                 |
+| `owner`             | Node that created the tape                 |
+| `permission`        | Default permission level                   |
+| `catalog_version`   | Current version counter                    |
+| `merkle_root`       | Root hash of the tape's Merkle tree        |
+| `last_sync`         | Unix timestamp of last catalog sync        |
+| `total_files`       | File count (denormalized for display)      |
+| `total_size`        | Total size in bytes (denormalized)         |
 
 Primary key: `(library_id, tape_name)`.
 
