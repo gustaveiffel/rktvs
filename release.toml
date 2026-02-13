@@ -1,0 +1,11 @@
+# cargo-release configuration for rk
+# https://github.com/crate-ci/cargo-release
+
+pre-release-hook = ["git-cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"]
+sign-commit = false
+sign-tag = false
+push = false
+publish = false
+tag-prefix = "v"
+tag-name = "v{{version}}"
+pre-release-commit-message = "release: v{{version}}"

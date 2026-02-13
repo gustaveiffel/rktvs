@@ -1,10 +1,16 @@
-[package]
-name = "rk"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-description = "Content-addressed file delivery for hostile networks"
 repository = "https://github.com/rktvs/rk"
+
+[package]
+name = "rk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Content-addressed file delivery for hostile networks"
 
 [[bin]]
 name = "rk"

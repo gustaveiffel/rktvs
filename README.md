@@ -200,6 +200,18 @@ Contributions are welcome.
 - Run `cargo test --workspace` before submitting. All tests must pass.
 - Follow existing code style. No `unsafe` without justification.
 
+### Releasing
+
+Requires [cargo-release](https://github.com/crate-ci/cargo-release) and [git-cliff](https://git-cliff.org/).
+
+```bash
+cargo release patch   # 0.1.0 → 0.1.1 (dry-run by default)
+cargo release minor   # 0.1.0 → 0.2.0
+cargo release --execute  # actually do it
+```
+
+This bumps the version in all crates (workspace inheritance), generates `CHANGELOG.md` via git-cliff, commits, and tags. No push — review locally first.
+
 ## License
 
 AGPL-3.0. See [LICENSE](LICENSE) for the full text.
