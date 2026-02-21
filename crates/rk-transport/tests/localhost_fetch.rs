@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+use std::sync::Arc;
 use prost::Message;
 use quinn::Endpoint;
 use rk_core::catalog::Catalog;
 use rk_core::chunk_store::ChunkStore;
 use rk_transport::{cert, hub::Hub, satellite::Satellite};
-use std::sync::Arc;
 
 #[tokio::test]
 async fn fetch_chunk_over_localhost() {

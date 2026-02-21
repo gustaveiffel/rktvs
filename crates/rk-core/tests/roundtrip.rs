@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Integration test: file → chunks → store → catalog → reconstruct → compare.
 
 use rk_core::catalog::Catalog;
