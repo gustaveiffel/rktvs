@@ -11,3 +11,6 @@ pub mod frame;
 pub mod hub;
 pub mod proto;
 pub mod satellite;
+
+#[cfg(feature = "test-support")]
+pub mod link_simulator;

@@ -22,9 +22,17 @@ tracing = "0.1"
 thiserror = "2.0"
 anyhow = "1.0"
 zstd = "0.13"
+rand = { version = "0.8", optional = true }
+
+[features]
+test-support = ["dep:rand", "tokio/time"]
 
 [build-dependencies]
 prost-build = "0.13"
 
 [dev-dependencies]
 tempfile = "3.25"
+
+[[test]]
+name = "degraded_link"
+required-features = ["test-support"]
