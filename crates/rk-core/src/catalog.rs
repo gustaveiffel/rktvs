@@ -463,6 +463,26 @@ impl Catalog {
         Ok(chunks)
     }
 
+    /// Look up the decompressed size of a chunk from the chunks table.
+    /// Returns None if the chunk hash is not in the catalog.
+    pub fn get_chunk_decompressed_size(&self, hash: &blake3::Hash) -> Result<Option<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT size FROM chunks WHERE hash = ?1",
+        )?;
+        let result = stmt.query_row(
+            rusqlite::params![hash.as_bytes().as_slice()],
+            |row| {
+                let size: i64 = row.get(0)?;
+                Ok(size as u64)
+            },
+        );
+        match result {
+            Ok(size) => Ok(Some(size)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn list_files(
         &self,
         library_id: &str,
@@ -1213,5 +1233,27 @@ mod tests {
             .unwrap();
         let lib = catalog.get_library("hub1").unwrap().unwrap();
         assert_eq!(lib.endpoint, "1.2.3.4:4443");
+    }
+
+    #[test]
+    fn get_chunk_decompressed_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        let hash = blake3::hash(b"test-chunk");
+        let chunks = vec![crate::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 5000,
+            compressed_size: 3500,
+        }];
+        catalog.record_file("local", "docs", "/file.txt", 1, 5000, None, None, 1, &chunks).unwrap();
+
+        // Should find the decompressed size
+        assert_eq!(catalog.get_chunk_decompressed_size(&hash).unwrap(), Some(5000));
+
+        // Unknown hash returns None
+        let unknown = blake3::hash(b"unknown");
+        assert_eq!(catalog.get_chunk_decompressed_size(&unknown).unwrap(), None);
     }
 }
