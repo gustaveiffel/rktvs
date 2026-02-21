@@ -17,7 +17,7 @@ use crate::proto;
 
 /// Current wire protocol version.
 /// Bump when ChunkResponse or stream semantics change in incompatible ways.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Minimum protocol version this hub accepts from satellites.
 const MIN_PROTOCOL_VERSION: u32 = 2;

@@ -10,7 +10,7 @@ use crate::frame::{self, StreamTag};
 use crate::proto;
 
 /// Protocol version this satellite speaks.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Minimum hub protocol version this satellite accepts.
 const MIN_HUB_VERSION: u32 = 2;
