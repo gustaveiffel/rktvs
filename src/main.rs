@@ -429,6 +429,11 @@ async fn main() -> Result<()> {
             eprintln!("  Missing chunks: {}", est.missing_chunks);
             eprintln!("  Total size:     {} bytes", est.total_bytes);
             eprintln!("  Transfer est:   {} bytes", est.transfer_bytes);
+            eprintln!("  Wire transfer:  ~{} bytes (compressed)", est.compressed_transfer_bytes);
+            if est.compressed_transfer_bytes < est.transfer_bytes && est.transfer_bytes > 0 {
+                let savings = 100 - (est.compressed_transfer_bytes * 100 / est.transfer_bytes);
+                eprintln!("  Compression:    ~{}% savings", savings);
+            }
         }
         Commands::Jobs { status } => {
             let jobs = catalog.list_jobs(status.as_deref())?;
