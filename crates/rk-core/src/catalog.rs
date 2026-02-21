@@ -608,11 +608,13 @@ impl Catalog {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        // Then get chunks for each file
+        // Then get chunks for each file (with compressed_size from chunks table)
         let mut chunk_stmt = self.conn.prepare(
-            "SELECT chunk_hash, offset, size FROM file_chunks
-             WHERE library_id = ?1 AND tape = ?2 AND file_path = ?3
-             ORDER BY chunk_index",
+            "SELECT fc.chunk_hash, fc.offset, fc.size, COALESCE(c.compressed_size, 0)
+             FROM file_chunks fc
+             LEFT JOIN chunks c ON fc.chunk_hash = c.hash
+             WHERE fc.library_id = ?1 AND fc.tape = ?2 AND fc.file_path = ?3
+             ORDER BY fc.chunk_index",
         )?;
 
         let mut result = Vec::with_capacity(files.len());
@@ -622,18 +624,18 @@ impl Catalog {
                     let hash_bytes: Vec<u8> = row.get(0)?;
                     let offset: i64 = row.get(1)?;
                     let size: i64 = row.get(2)?;
-                    let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
-                        rusqlite::Error::InvalidColumnType(
+                    let compressed_size: i64 = row.get(3)?;
+                    let hash_array: [u8; 32] = hash_bytes.as_slice().try_into()
+                        .map_err(|_| rusqlite::Error::InvalidColumnType(
                             0,
                             "chunk_hash".into(),
                             rusqlite::types::Type::Blob,
-                        )
-                    })?;
+                        ))?;
                     Ok(crate::chunker::ChunkMeta {
                         hash: blake3::Hash::from_bytes(hash_array),
                         offset: offset as u64,
                         size: size as usize,
-                        compressed_size: 0,
+                        compressed_size: compressed_size as usize,
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;

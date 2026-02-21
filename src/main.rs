@@ -213,6 +213,21 @@ fn validate_library_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a tape name: alphanumeric, hyphens, underscores, dots only.
+/// Prevents path traversal when the tape name is used in filesystem paths (e.g. dictionaries).
+fn validate_tape_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("tape name cannot be empty");
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        bail!(
+            "invalid tape name '{name}': only alphanumeric characters, hyphens, \
+             underscores, and dots are allowed"
+        );
+    }
+    Ok(())
+}
+
 /// Parse "<library>:<tape>/<path>" into (library, tape, file_path).
 fn parse_library_tape_path(input: &str) -> Result<(&str, &str, &str)> {
     let (library, rest) = input.split_once(':').ok_or_else(|| {
@@ -799,6 +814,7 @@ async fn main() -> Result<()> {
 
         Commands::Tape { command } => match command {
             TapeCommands::TrainDict { tape } => {
+                validate_tape_name(&tape)?;
                 let dict_dir = data_dir.join("dicts");
                 let hashes = catalog.sample_chunk_hashes("local", &tape, 100)?;
                 if hashes.is_empty() {
