@@ -152,4 +152,31 @@ mod tests {
             est.compressed_transfer_bytes, est.transfer_bytes);
         assert!(est.compressed_transfer_bytes > 0);
     }
+
+    /// Synced data has compressed_size=0 in file_chunks (no chunks table row).
+    /// Estimation must use DEFAULT_COMPRESSION_RATIO fallback, not crash.
+    #[test]
+    fn estimate_falls_back_when_compressed_size_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_local = ChunkStore::new(dir.path().join("local").to_path_buf());
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        // Simulate synced metadata: record_file with compressed_size=0
+        let hash = blake3::hash(b"synced-chunk");
+        let chunks = vec![rk_core::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 10000,
+            compressed_size: 0, // satellite sync sets this to 0
+        }];
+        catalog.record_file("lib-a", "tape-1", "/synced.bin", 1, 10000, None, None, 1, &chunks).unwrap();
+
+        let resolver = ChunkResolver::new(None, &store_local);
+        let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/synced.bin").unwrap();
+
+        assert_eq!(est.missing_chunks, 1);
+        assert_eq!(est.transfer_bytes, 10000);
+        // Fallback: 10000 * 0.65 = 6500
+        assert_eq!(est.compressed_transfer_bytes, 6500);
+    }
 }

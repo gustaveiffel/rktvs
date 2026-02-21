@@ -1305,4 +1305,59 @@ mod tests {
         let unknown = blake3::hash(b"unknown");
         assert_eq!(catalog.get_chunk_decompressed_size(&unknown).unwrap(), None);
     }
+
+    // ── Backward compatibility tests ──────────────────────
+
+    /// Simulate synced data: file_chunks rows exist but no corresponding
+    /// entry in the chunks table (satellite received metadata only).
+    fn insert_file_chunks_without_chunks_table(catalog: &Catalog, lib: &str, tape: &str, path: &str) {
+        let hash = blake3::hash(b"synced-chunk-no-chunks-row");
+        // Insert file
+        catalog.conn.execute(
+            "INSERT OR REPLACE INTO files (library_id, tape, path, entry_type, size, version)
+             VALUES (?1, ?2, ?3, 1, 5000, 1)",
+            rusqlite::params![lib, tape, path],
+        ).unwrap();
+        // Insert file_chunks but NOT into chunks table
+        catalog.conn.execute(
+            "INSERT INTO file_chunks (library_id, tape, file_path, chunk_index, chunk_hash, offset, size)
+             VALUES (?1, ?2, ?3, 0, ?4, 0, 5000)",
+            rusqlite::params![lib, tape, path, hash.as_bytes().as_slice()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn get_file_chunks_graceful_without_chunks_table_row() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        let chunks = catalog.get_file_chunks("synced-lib", "tape1", "/orphan.bin").unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].size, 5000);
+        // No chunks table row → COALESCE returns 0
+        assert_eq!(chunks[0].compressed_size, 0);
+    }
+
+    #[test]
+    fn get_all_files_with_chunks_graceful_without_chunks_table_row() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        let files = catalog.get_all_files_with_chunks("synced-lib", "tape1").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].chunks.len(), 1);
+        assert_eq!(files[0].chunks[0].size, 5000);
+        // No chunks table row → COALESCE returns 0
+        assert_eq!(files[0].chunks[0].compressed_size, 0);
+    }
+
+    #[test]
+    fn get_chunk_decompressed_size_missing_returns_none() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        // Chunk is in file_chunks but NOT in chunks table
+        let hash = blake3::hash(b"synced-chunk-no-chunks-row");
+        assert_eq!(catalog.get_chunk_decompressed_size(&hash).unwrap(), None);
+    }
 }
