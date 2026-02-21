@@ -485,6 +485,31 @@ impl Catalog {
         }
     }
 
+    /// Sample up to `limit` chunk hashes from a tape (for dictionary training).
+    pub fn sample_chunk_hashes(
+        &self,
+        library_id: &str,
+        tape: &str,
+        limit: usize,
+    ) -> Result<Vec<blake3::Hash>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT chunk_hash FROM file_chunks
+             WHERE library_id = ?1 AND tape = ?2
+             ORDER BY RANDOM() LIMIT ?3",
+        )?;
+        let hashes = stmt
+            .query_map(rusqlite::params![library_id, tape, limit as i64], |row| {
+                let bytes: Vec<u8> = row.get(0)?;
+                let arr: [u8; 32] = bytes.as_slice().try_into()
+                    .map_err(|_| rusqlite::Error::InvalidColumnType(
+                        0, "chunk_hash".into(), rusqlite::types::Type::Blob,
+                    ))?;
+                Ok(blake3::Hash::from_bytes(arr))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(hashes)
+    }
+
     pub fn list_files(
         &self,
         library_id: &str,

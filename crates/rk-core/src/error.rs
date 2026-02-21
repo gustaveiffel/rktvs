@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("chunk not available: {0}")]
     ChunkNotAvailable(blake3::Hash),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

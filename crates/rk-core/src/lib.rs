@@ -7,6 +7,7 @@
 pub mod catalog;
 pub mod chunk_store;
 pub mod chunker;
+pub mod dict;
 pub mod error;
 pub mod indexer;
 pub mod manifest;
