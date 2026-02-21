@@ -97,6 +97,20 @@ enum Commands {
         #[arg(long, default_value = "normal")]
         grade: String,
     },
+    /// Tape management commands
+    Tape {
+        #[command(subcommand)]
+        command: TapeCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum TapeCommands {
+    /// Train a zstd dictionary from tape chunks for better compression
+    TrainDict {
+        /// Tape name to train dictionary for
+        tape: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -780,6 +794,26 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
+        // ── Tape commands ──────────────────────────────────
+
+        Commands::Tape { command } => match command {
+            TapeCommands::TrainDict { tape } => {
+                let dict_dir = data_dir.join("dicts");
+                let hashes = catalog.sample_chunk_hashes("local", &tape, 100)?;
+                if hashes.is_empty() {
+                    eprintln!("no chunks found for tape '{tape}' — ingest files first");
+                    return Ok(());
+                }
+                eprintln!("training dictionary from {} samples...", hashes.len());
+                let dict_size = rk_core::dict::train_dict(&store, &hashes, &dict_dir, &tape)?;
+                eprintln!(
+                    "dictionary saved: {} ({} bytes)",
+                    dict_dir.join(format!("{tape}.zdict")).display(),
+                    dict_size
+                );
+            }
+        },
 
         // ── Fetch command ───────────────────────────────────
         Commands::Fetch { path, grade } => {
