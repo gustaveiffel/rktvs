@@ -142,6 +142,7 @@ rk jobs --status pending
 | `rk library ping <id>` | Ping a library to check connectivity |
 | `rk library sync <id> [--tape <name>]` | Sync catalog metadata from a remote library |
 | `rk fetch <library>:<tape>/<path> [--grade <g>]` | Fetch a file from a remote library (supports glob patterns: `*.mov`, `src/**/*.rs`) |
+| `rk tape train-dict <tape>` | Train a zstd dictionary from sampled chunks for a tape |
 
 Grades: `urgent` (P0), `normal` (P1), `batch` (P2), `background` (P3).
 
@@ -191,9 +192,11 @@ What works today:
 - Schema migrations for upgrading from earlier database versions
 - Protobuf wire protocol
 - Grade x CostTier scheduling matrix
-- Transfer cost estimation without data transfer
+- Transfer cost estimation without data transfer (with compressed wire size estimates)
 - Resumable chunk-level fetching with job tracking
 - Catalog sync between hub and satellite (`rk library sync`)
+- Per-tape zstd dictionary training (`rk tape train-dict`)
+- Degraded link test suite (latency, loss, bandwidth limiting, connection drop)
 
 What is planned:
 - Connection reuse and 0-RTT reconnect

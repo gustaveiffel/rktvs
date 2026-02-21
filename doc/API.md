@@ -124,6 +124,17 @@ let chunks: Vec<ChunkMeta> = catalog.get_file_chunks(library_id, tape, path)?;
 let files: Vec<FileEntry> = catalog.list_files(library_id, tape, "/src/")?;
 ```
 
+#### Chunk metadata
+
+```rust
+// Look up the decompressed size of a chunk (from the chunks table).
+// Returns None if the chunk hash is not in the catalog.
+let size: Option<u64> = catalog.get_chunk_decompressed_size(&hash)?;
+
+// Sample random chunk hashes from a tape (for dictionary training).
+let hashes: Vec<blake3::Hash> = catalog.sample_chunk_hashes("local", "photos", 100)?;
+```
+
 #### Tape and bulk queries
 
 ```rust
@@ -261,6 +272,26 @@ let result: VerifyResult = verify_manifest(&manifest, true);
 // result: chunks_checked, chunks_ok, chunks_stale, chunks_missing, chunks_corrupted
 ```
 
+### Dict
+
+Per-tape zstd dictionary training. Dictionaries improve compression ratio for
+small, similar chunks.
+
+```rust
+use rk_core::dict;
+
+// Train a dictionary from sampled chunks.
+let sample_hashes = catalog.sample_chunk_hashes("local", "photos", 100)?;
+let dict_size = dict::train_dict(&store, &sample_hashes, dict_dir, "photos")?;
+// Saves to <dict_dir>/photos.zdict
+
+// Load a trained dictionary (returns None if not found).
+let dict_data: Option<Vec<u8>> = dict::load_dict(dict_dir, "photos")?;
+
+// Get the dictionary file path.
+let path: PathBuf = dict::dict_path(dict_dir, "photos");
+```
+
 ---
 
 ## rk-tar
@@ -375,9 +406,11 @@ catalog queries run on `spawn_blocking` to avoid stalling the async runtime.
 Chunks from the store are served compressed (`compressed = true`); chunks from
 the manifest are served decompressed (`compressed = false`).
 
-**Protocol version:** `hub::PROTOCOL_VERSION` (currently 3). The hub rejects
+**Protocol version:** `hub::PROTOCOL_VERSION` (currently 4). The hub rejects
 satellites with protocol version < 2 at handshake time. CatalogSync requires
-version 3.
+version 3. Version 4 adds catalog-based chunk size lookup (populates
+`ChunkResponse.size` from SQLite instead of decompressing) and compresses
+manifest-path chunks before sending.
 
 ### Satellite
 
@@ -428,7 +461,7 @@ let (_, files) = satellite.sync_catalog("docs").await?;
 The satellite checks `hub_protocol_version >= 3` before opening a CatalogSync
 stream. Returns an error if the hub is too old.
 
-**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 3). The
+**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 4). The
 satellite rejects hubs with an older protocol version at handshake time.
 The `server_name` must match a SAN in the hub's certificate (use `--san`
 at `hub init` time). The satellite stores `hub_protocol_version` from the
@@ -473,7 +506,8 @@ let est: Estimate = estimate_file(
     &catalog, &resolver,
     "myhub", "project", "/path/to/file.bin",
 )?;
-// est: total_chunks, local_chunks, missing_chunks, total_bytes, transfer_bytes
+// est: total_chunks, local_chunks, missing_chunks, total_bytes, transfer_bytes,
+//      compressed_transfer_bytes
 ```
 
 ### fetcher

@@ -49,7 +49,7 @@ cp target/release/rk ~/.local/bin/    # or /usr/local/bin/
 
 ```bash
 rk --help
-cargo test --workspace    # 91 tests, should all pass
+cargo test --workspace    # 109 tests, should all pass
 ```
 
 ---
@@ -104,7 +104,7 @@ Check version (includes protocol version for debugging compatibility issues):
 
 ```bash
 rk --version
-# rk 0.2.0 (protocol v3)
+# rk 0.2.0 (protocol v4)
 ```
 
 Every rk command operates on a data directory. You don't need to initialize
@@ -538,12 +538,16 @@ File: myproject/large-dataset.bin
   Missing chunks: 120
   Total size:     524288000 bytes
   Transfer est:   503316480 bytes
+  Wire transfer:  ~327155712 bytes (compressed)
+  Compression:    ~35% savings
 ```
 
 This tells you:
 - How many chunks you already have locally (from previous fetches or shared
   content).
-- How many bytes would actually move over the wire.
+- How many bytes would actually move over the wire (raw and compressed).
+- Estimated compression savings based on actual zstd compressed sizes (or a
+  0.65 ratio estimate when compressed sizes are unknown).
 - No data is transferred during estimation.
 
 ### Scheduling matrix

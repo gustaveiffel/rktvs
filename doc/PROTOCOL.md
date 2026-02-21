@@ -77,7 +77,8 @@ message HandshakeAck {
 }
 ```
 
-Current `protocol_version`: **3** (v2: compressed wire transfer, v3: catalog sync).
+Current `protocol_version`: **4** (v2: compressed wire transfer, v3: catalog sync,
+v4: catalog-based chunk size lookup, compressed manifest fallback).
 
 **Version negotiation:** the satellite sends its version in `Handshake`. The
 hub checks it against its minimum supported version and rejects with
@@ -103,7 +104,7 @@ message ChunkRequest {
 message ChunkResponse {
   bool found = 1;
   bytes data = 2;        // chunk data (compressed or raw, see `compressed` flag)
-  uint64 size = 3;       // decompressed size in bytes
+  uint64 size = 3;       // decompressed size (from catalog lookup; 0 if no catalog)
   bool compressed = 4;   // true if `data` is zstd-compressed
 }
 ```
@@ -114,8 +115,9 @@ modes depending on how the chunk is resolved:
 - **From chunk store:** `data` contains the raw zstd-compressed bytes as stored
   on disk, `compressed = true`. This avoids a decompress/recompress round-trip
   and saves bandwidth -- exactly the resource rk is designed to conserve.
-- **From manifest (zero-copy path):** `data` contains decompressed bytes read
-  from the source file, `compressed = false`.
+- **From manifest (zero-copy path):** `data` contains zstd-compressed bytes
+  (compressed before sending to save bandwidth), `compressed = true`. Falls back
+  to uncompressed if zstd encoding fails.
 
 The satellite checks the `compressed` flag: if true, it calls
 `ChunkStore::put_compressed()` (which verifies the hash by decompressing
