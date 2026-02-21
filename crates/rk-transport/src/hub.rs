@@ -123,7 +123,7 @@ async fn handle_stream(
     match tag {
         StreamTag::Control => handle_control(&mut send, &mut recv).await?,
         StreamTag::ChunkRequest => {
-            handle_chunk_request(&mut send, &mut recv, store, manifest).await?;
+            handle_chunk_request(&mut send, &mut recv, store, manifest, catalog).await?;
         }
         StreamTag::CatalogSync => {
             handle_catalog_sync(&mut send, &mut recv, catalog).await?;
@@ -169,6 +169,7 @@ async fn handle_chunk_request(
     recv: &mut RecvStream,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
 ) -> anyhow::Result<()> {
     let data = recv.read_to_end(4096).await?;
     let req = proto::ChunkRequest::decode_length_delimited(data.as_slice())?;
@@ -186,8 +187,13 @@ async fn handle_chunk_request(
         if store.has(&hash)
             && let Ok(compressed) = store.get_compressed(&hash)
         {
-            let decompressed_size = zstd::decode_all(compressed.as_slice())
-                .map(|d| d.len() as u64)
+            // Look up decompressed size from catalog instead of decompressing
+            let decompressed_size = catalog
+                .as_ref()
+                .and_then(|cat| {
+                    let cat = cat.lock().expect("catalog lock poisoned");
+                    cat.get_chunk_decompressed_size(&hash).ok().flatten()
+                })
                 .unwrap_or(0);
             return proto::ChunkResponse {
                 found: true,
@@ -197,14 +203,26 @@ async fn handle_chunk_request(
             };
         }
         // Fallback: try manifest/resolver path (returns decompressed data)
+        // Compress before sending to save bandwidth on hostile links
         let resolver = ChunkResolver::new(manifest.as_deref(), &store);
         match resolver.get(&hash) {
-            Ok(chunk_data) => proto::ChunkResponse {
-                found: true,
-                size: chunk_data.len() as u64,
-                data: chunk_data,
-                compressed: false,
-            },
+            Ok(chunk_data) => {
+                let size = chunk_data.len() as u64;
+                match zstd::encode_all(chunk_data.as_slice(), 3) {
+                    Ok(compressed) => proto::ChunkResponse {
+                        found: true,
+                        size,
+                        data: compressed,
+                        compressed: true,
+                    },
+                    Err(_) => proto::ChunkResponse {
+                        found: true,
+                        size,
+                        data: chunk_data,
+                        compressed: false,
+                    },
+                }
+            }
             Err(_) => proto::ChunkResponse {
                 found: false,
                 size: 0,
