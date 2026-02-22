@@ -111,12 +111,8 @@ async fn fetch_chunk_high_latency() {
     let data = b"high latency vsat chunk data for testing transport resilience";
     let hash = store.put(data).unwrap();
 
-    let (sim, client_config) = setup_degraded(
-        store,
-        LinkProfile::vsat(),
-        Duration::from_millis(600),
-    )
-    .await;
+    let (sim, client_config) =
+        setup_degraded(store, LinkProfile::vsat(), Duration::from_millis(600)).await;
 
     let sat = Satellite::connect(sim.addr(), "localhost", client_config, "vsat-sat")
         .await
@@ -135,12 +131,8 @@ async fn fetch_chunk_packet_loss() {
     let data = vec![0xABu8; 4096]; // 4KB chunk
     let hash = store.put(&data).unwrap();
 
-    let (sim, client_config) = setup_degraded(
-        store,
-        LinkProfile::hostile(),
-        Duration::from_millis(1500),
-    )
-    .await;
+    let (sim, client_config) =
+        setup_degraded(store, LinkProfile::hostile(), Duration::from_millis(1500)).await;
 
     let sat = Satellite::connect(sim.addr(), "localhost", client_config, "hostile-sat")
         .await
@@ -160,12 +152,8 @@ async fn fetch_chunk_bandwidth_limited() {
     let data = vec![0x42u8; 8192];
     let hash = store.put(&data).unwrap();
 
-    let (sim, client_config) = setup_degraded(
-        store,
-        LinkProfile::vsat(),
-        Duration::from_millis(600),
-    )
-    .await;
+    let (sim, client_config) =
+        setup_degraded(store, LinkProfile::vsat(), Duration::from_millis(600)).await;
 
     let start = std::time::Instant::now();
 
@@ -200,12 +188,8 @@ async fn fetch_multichunk_metered() {
         })
         .collect();
 
-    let (sim, client_config) = setup_degraded(
-        store,
-        LinkProfile::metered(),
-        Duration::from_millis(150),
-    )
-    .await;
+    let (sim, client_config) =
+        setup_degraded(store, LinkProfile::metered(), Duration::from_millis(150)).await;
 
     let sat = Satellite::connect(sim.addr(), "localhost", client_config, "metered-sat")
         .await
@@ -268,7 +252,9 @@ async fn connection_drop_and_resume() {
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 
-    let sim = LinkSimulator::start(hub_addr, LinkProfile::lan()).await.unwrap();
+    let sim = LinkSimulator::start(hub_addr, LinkProfile::lan())
+        .await
+        .unwrap();
 
     // Phase 1: fetch first 2 chunks
     let sat = Satellite::connect(sim.addr(), "localhost", client_config.clone(), "resume-sat")
@@ -373,7 +359,9 @@ async fn catalog_sync_degraded() {
     let hub_addr = hub.local_addr();
     tokio::spawn(async move { hub.run().await });
 
-    let sim = LinkSimulator::start(hub_addr, LinkProfile::metered()).await.unwrap();
+    let sim = LinkSimulator::start(hub_addr, LinkProfile::metered())
+        .await
+        .unwrap();
 
     let sat = Satellite::connect(sim.addr(), "localhost", client_config, "cat-sat")
         .await
@@ -400,17 +388,16 @@ async fn handshake_high_latency() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ChunkStore::new(dir.path().to_path_buf()));
 
-    let (sim, client_config) = setup_degraded(
-        store,
-        LinkProfile::vsat(),
-        Duration::from_millis(600),
-    )
-    .await;
+    let (sim, client_config) =
+        setup_degraded(store, LinkProfile::vsat(), Duration::from_millis(600)).await;
 
     let sat = Satellite::connect(sim.addr(), "localhost", client_config, "latency-sat")
         .await
         .unwrap();
 
     assert_eq!(sat.satellite_id, "latency-sat");
-    assert_eq!(sat.hub_protocol_version, rk_transport::hub::PROTOCOL_VERSION);
+    assert_eq!(
+        sat.hub_protocol_version,
+        rk_transport::hub::PROTOCOL_VERSION
+    );
 }

@@ -219,7 +219,10 @@ fn validate_tape_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("tape name cannot be empty");
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
         bail!(
             "invalid tape name '{name}': only alphanumeric characters, hyphens, \
              underscores, and dots are allowed"
@@ -458,7 +461,10 @@ async fn main() -> Result<()> {
             eprintln!("  Missing chunks: {}", est.missing_chunks);
             eprintln!("  Total size:     {} bytes", est.total_bytes);
             eprintln!("  Transfer est:   {} bytes", est.transfer_bytes);
-            eprintln!("  Wire transfer:  ~{} bytes (compressed)", est.compressed_transfer_bytes);
+            eprintln!(
+                "  Wire transfer:  ~{} bytes (compressed)",
+                est.compressed_transfer_bytes
+            );
             if est.compressed_transfer_bytes < est.transfer_bytes && est.transfer_bytes > 0 {
                 let savings = 100 - (est.compressed_transfer_bytes * 100 / est.transfer_bytes);
                 eprintln!("  Compression:    ~{}% savings", savings);
@@ -811,7 +817,6 @@ async fn main() -> Result<()> {
         }
 
         // ── Tape commands ──────────────────────────────────
-
         Commands::Tape { command } => match command {
             TapeCommands::TrainDict { tape } => {
                 validate_tape_name(&tape)?;

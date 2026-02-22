@@ -5,8 +5,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::chunk_store::ChunkStore;
 use crate::Result;
+use crate::chunk_store::ChunkStore;
 
 /// Maximum number of samples used for dictionary training.
 const MAX_SAMPLES: usize = 100;
@@ -36,7 +36,9 @@ pub fn train_dict(
     }
 
     if samples.is_empty() {
-        return Err(crate::Error::Other("no samples available for dictionary training".into()));
+        return Err(crate::Error::Other(
+            "no samples available for dictionary training".into(),
+        ));
     }
 
     let dict = zstd::dict::from_continuous(&samples, &sample_sizes, MAX_DICT_SIZE)

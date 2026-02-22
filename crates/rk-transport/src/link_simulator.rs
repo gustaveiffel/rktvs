@@ -113,7 +113,11 @@ impl LinkSimulator {
             })
         };
 
-        Ok(Self { proxy_addr, profile, task })
+        Ok(Self {
+            proxy_addr,
+            profile,
+            task,
+        })
     }
 
     /// Address the satellite should connect to.
@@ -178,8 +182,7 @@ async fn run_proxy(
         tokio::spawn(async move {
             // Bandwidth limiting (token bucket)
             if let Some(bw) = prof.bandwidth_bps {
-                let transfer_time =
-                    Duration::from_secs_f64(packet.len() as f64 / bw as f64);
+                let transfer_time = Duration::from_secs_f64(packet.len() as f64 / bw as f64);
                 let mut next = next_send.lock().await;
                 let now = Instant::now();
                 if *next > now {

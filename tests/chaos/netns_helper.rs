@@ -18,11 +18,7 @@ pub fn can_run_netem() -> bool {
     if !is_root() {
         return false;
     }
-    Command::new("ip")
-        .arg("netns")
-        .arg("list")
-        .output()
-        .is_ok()
+    Command::new("ip").arg("netns").arg("list").output().is_ok()
 }
 
 fn is_root() -> bool {
@@ -71,13 +67,7 @@ impl NetnsGuard {
         // Assign addresses
         run_cmd(
             "ip",
-            &[
-                "addr",
-                "add",
-                &format!("{host_addr}/24"),
-                "dev",
-                &veth_host,
-            ],
+            &["addr", "add", &format!("{host_addr}/24"), "dev", &veth_host],
         )?;
         run_cmd(
             "ip",
@@ -103,9 +93,7 @@ impl NetnsGuard {
         )?;
         run_cmd(
             "ip",
-            &[
-                "netns", "exec", &ns_name, "ip", "link", "set", "lo", "up",
-            ],
+            &["netns", "exec", &ns_name, "ip", "link", "set", "lo", "up"],
         )?;
 
         Ok(Self {

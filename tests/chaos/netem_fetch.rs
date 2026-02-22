@@ -15,7 +15,7 @@ use std::time::Duration;
 use rk_core::chunk_store::ChunkStore;
 use rk_transport::{cert, hub::Hub, satellite::Satellite};
 
-use netns_helper::{can_run_netem, NetnsGuard};
+use netns_helper::{NetnsGuard, can_run_netem};
 
 macro_rules! require_netem {
     () => {
@@ -67,10 +67,8 @@ async fn netem_hostile_multichunk() {
     require_netem!();
 
     let ns = NetnsGuard::create("hostile").unwrap();
-    ns.apply_netem(&[
-        "delay", "1500ms", "500ms", "loss", "25%", "rate", "64kbit",
-    ])
-    .unwrap();
+    ns.apply_netem(&["delay", "1500ms", "500ms", "loss", "25%", "rate", "64kbit"])
+        .unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(ChunkStore::new(dir.path().to_path_buf()));

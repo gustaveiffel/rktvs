@@ -45,8 +45,7 @@ pub fn estimate_file(
             if chunk.compressed_size > 0 {
                 compressed_transfer_bytes += chunk.compressed_size as u64;
             } else {
-                compressed_transfer_bytes +=
-                    (chunk.size as f64 * DEFAULT_COMPRESSION_RATIO) as u64;
+                compressed_transfer_bytes += (chunk.size as f64 * DEFAULT_COMPRESSION_RATIO) as u64;
             }
         }
     }
@@ -138,18 +137,30 @@ mod tests {
 
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let result = chunker::ingest(&data, &store_ingest, 4_096, 8_192, 16_384).unwrap();
-        catalog.record_file(
-            "lib-a", "tape-1", "/remote.bin", 1,
-            data.len() as u64, None, None, 1, &result.chunks,
-        ).unwrap();
+        catalog
+            .record_file(
+                "lib-a",
+                "tape-1",
+                "/remote.bin",
+                1,
+                data.len() as u64,
+                None,
+                None,
+                1,
+                &result.chunks,
+            )
+            .unwrap();
 
         let resolver = ChunkResolver::new(None, &store_local);
         let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/remote.bin").unwrap();
 
         // compressed_transfer_bytes should be less than transfer_bytes
-        assert!(est.compressed_transfer_bytes < est.transfer_bytes,
+        assert!(
+            est.compressed_transfer_bytes < est.transfer_bytes,
             "compressed {} should be < raw {}",
-            est.compressed_transfer_bytes, est.transfer_bytes);
+            est.compressed_transfer_bytes,
+            est.transfer_bytes
+        );
         assert!(est.compressed_transfer_bytes > 0);
     }
 
@@ -169,7 +180,19 @@ mod tests {
             size: 10000,
             compressed_size: 0, // satellite sync sets this to 0
         }];
-        catalog.record_file("lib-a", "tape-1", "/synced.bin", 1, 10000, None, None, 1, &chunks).unwrap();
+        catalog
+            .record_file(
+                "lib-a",
+                "tape-1",
+                "/synced.bin",
+                1,
+                10000,
+                None,
+                None,
+                1,
+                &chunks,
+            )
+            .unwrap();
 
         let resolver = ChunkResolver::new(None, &store_local);
         let est = estimate_file(&catalog, &resolver, "lib-a", "tape-1", "/synced.bin").unwrap();
