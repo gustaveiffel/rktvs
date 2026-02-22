@@ -29,7 +29,7 @@ fn is_root() -> bool {
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map_or(false, |s| s.trim() == "0")
+            .is_some_and(|s| s.trim() == "0")
     }
     #[cfg(not(unix))]
     {
@@ -130,9 +130,8 @@ fn run_cmd(program: &str, args: &[&str]) -> std::io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("{program} {args:?} failed with {status}"),
-        ))
+        Err(std::io::Error::other(format!(
+            "{program} {args:?} failed with {status}"
+        )))
     }
 }
