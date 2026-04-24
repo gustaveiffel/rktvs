@@ -434,9 +434,11 @@ impl Catalog {
         path: &str,
     ) -> Result<Vec<crate::chunker::ChunkMeta>> {
         let mut stmt = self.conn.prepare(
-            "SELECT chunk_hash, offset, size FROM file_chunks
-             WHERE library_id = ?1 AND tape = ?2 AND file_path = ?3
-             ORDER BY chunk_index",
+            "SELECT fc.chunk_hash, fc.offset, fc.size, COALESCE(c.compressed_size, 0)
+             FROM file_chunks fc
+             LEFT JOIN chunks c ON fc.chunk_hash = c.hash
+             WHERE fc.library_id = ?1 AND fc.tape = ?2 AND fc.file_path = ?3
+             ORDER BY fc.chunk_index",
         )?;
 
         let chunks = stmt
@@ -444,6 +446,7 @@ impl Catalog {
                 let hash_bytes: Vec<u8> = row.get(0)?;
                 let offset: i64 = row.get(1)?;
                 let size: i64 = row.get(2)?;
+                let compressed_size: i64 = row.get(3)?;
                 let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
                     rusqlite::Error::InvalidColumnType(
                         0,
@@ -455,12 +458,57 @@ impl Catalog {
                     hash: blake3::Hash::from_bytes(hash_array),
                     offset: offset as u64,
                     size: size as usize,
-                    compressed_size: 0,
+                    compressed_size: compressed_size as usize,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(chunks)
+    }
+
+    /// Look up the decompressed size of a chunk from the chunks table.
+    /// Returns None if the chunk hash is not in the catalog.
+    pub fn get_chunk_decompressed_size(&self, hash: &blake3::Hash) -> Result<Option<u64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT size FROM chunks WHERE hash = ?1")?;
+        let result = stmt.query_row(rusqlite::params![hash.as_bytes().as_slice()], |row| {
+            let size: i64 = row.get(0)?;
+            Ok(size as u64)
+        });
+        match result {
+            Ok(size) => Ok(Some(size)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Sample up to `limit` chunk hashes from a tape (for dictionary training).
+    pub fn sample_chunk_hashes(
+        &self,
+        library_id: &str,
+        tape: &str,
+        limit: usize,
+    ) -> Result<Vec<blake3::Hash>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT chunk_hash FROM file_chunks
+             WHERE library_id = ?1 AND tape = ?2
+             ORDER BY RANDOM() LIMIT ?3",
+        )?;
+        let hashes = stmt
+            .query_map(rusqlite::params![library_id, tape, limit as i64], |row| {
+                let bytes: Vec<u8> = row.get(0)?;
+                let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        0,
+                        "chunk_hash".into(),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
+                Ok(blake3::Hash::from_bytes(arr))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(hashes)
     }
 
     pub fn list_files(
@@ -561,11 +609,13 @@ impl Catalog {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        // Then get chunks for each file
+        // Then get chunks for each file (with compressed_size from chunks table)
         let mut chunk_stmt = self.conn.prepare(
-            "SELECT chunk_hash, offset, size FROM file_chunks
-             WHERE library_id = ?1 AND tape = ?2 AND file_path = ?3
-             ORDER BY chunk_index",
+            "SELECT fc.chunk_hash, fc.offset, fc.size, COALESCE(c.compressed_size, 0)
+             FROM file_chunks fc
+             LEFT JOIN chunks c ON fc.chunk_hash = c.hash
+             WHERE fc.library_id = ?1 AND fc.tape = ?2 AND fc.file_path = ?3
+             ORDER BY fc.chunk_index",
         )?;
 
         let mut result = Vec::with_capacity(files.len());
@@ -575,6 +625,7 @@ impl Catalog {
                     let hash_bytes: Vec<u8> = row.get(0)?;
                     let offset: i64 = row.get(1)?;
                     let size: i64 = row.get(2)?;
+                    let compressed_size: i64 = row.get(3)?;
                     let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
                         rusqlite::Error::InvalidColumnType(
                             0,
@@ -586,7 +637,7 @@ impl Catalog {
                         hash: blake3::Hash::from_bytes(hash_array),
                         offset: offset as u64,
                         size: size as usize,
-                        compressed_size: 0,
+                        compressed_size: compressed_size as usize,
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1213,5 +1264,143 @@ mod tests {
             .unwrap();
         let lib = catalog.get_library("hub1").unwrap().unwrap();
         assert_eq!(lib.endpoint, "1.2.3.4:4443");
+    }
+
+    #[test]
+    fn get_file_chunks_includes_compressed_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        let hash = blake3::hash(b"compressed-test");
+        let chunks = vec![crate::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 10000,
+            compressed_size: 7000,
+        }];
+        catalog
+            .record_file(
+                "lib-a",
+                "tape-1",
+                "/data.bin",
+                1,
+                10000,
+                None,
+                None,
+                1,
+                &chunks,
+            )
+            .unwrap();
+
+        let result = catalog
+            .get_file_chunks("lib-a", "tape-1", "/data.bin")
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].size, 10000);
+        assert_eq!(result[0].compressed_size, 7000);
+    }
+
+    #[test]
+    fn get_chunk_decompressed_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+
+        let hash = blake3::hash(b"test-chunk");
+        let chunks = vec![crate::chunker::ChunkMeta {
+            hash,
+            offset: 0,
+            size: 5000,
+            compressed_size: 3500,
+        }];
+        catalog
+            .record_file(
+                "local",
+                "docs",
+                "/file.txt",
+                1,
+                5000,
+                None,
+                None,
+                1,
+                &chunks,
+            )
+            .unwrap();
+
+        // Should find the decompressed size
+        assert_eq!(
+            catalog.get_chunk_decompressed_size(&hash).unwrap(),
+            Some(5000)
+        );
+
+        // Unknown hash returns None
+        let unknown = blake3::hash(b"unknown");
+        assert_eq!(catalog.get_chunk_decompressed_size(&unknown).unwrap(), None);
+    }
+
+    // ── Backward compatibility tests ──────────────────────
+
+    /// Simulate synced data: file_chunks rows exist but no corresponding
+    /// entry in the chunks table (satellite received metadata only).
+    fn insert_file_chunks_without_chunks_table(
+        catalog: &Catalog,
+        lib: &str,
+        tape: &str,
+        path: &str,
+    ) {
+        let hash = blake3::hash(b"synced-chunk-no-chunks-row");
+        // Insert file
+        catalog
+            .conn
+            .execute(
+                "INSERT OR REPLACE INTO files (library_id, tape, path, entry_type, size, version)
+             VALUES (?1, ?2, ?3, 1, 5000, 1)",
+                rusqlite::params![lib, tape, path],
+            )
+            .unwrap();
+        // Insert file_chunks but NOT into chunks table
+        catalog.conn.execute(
+            "INSERT INTO file_chunks (library_id, tape, file_path, chunk_index, chunk_hash, offset, size)
+             VALUES (?1, ?2, ?3, 0, ?4, 0, 5000)",
+            rusqlite::params![lib, tape, path, hash.as_bytes().as_slice()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn get_file_chunks_graceful_without_chunks_table_row() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        let chunks = catalog
+            .get_file_chunks("synced-lib", "tape1", "/orphan.bin")
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].size, 5000);
+        // No chunks table row → COALESCE returns 0
+        assert_eq!(chunks[0].compressed_size, 0);
+    }
+
+    #[test]
+    fn get_all_files_with_chunks_graceful_without_chunks_table_row() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        let files = catalog
+            .get_all_files_with_chunks("synced-lib", "tape1")
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].chunks.len(), 1);
+        assert_eq!(files[0].chunks[0].size, 5000);
+        // No chunks table row → COALESCE returns 0
+        assert_eq!(files[0].chunks[0].compressed_size, 0);
+    }
+
+    #[test]
+    fn get_chunk_decompressed_size_missing_returns_none() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        insert_file_chunks_without_chunks_table(&catalog, "synced-lib", "tape1", "/orphan.bin");
+
+        // Chunk is in file_chunks but NOT in chunks table
+        let hash = blake3::hash(b"synced-chunk-no-chunks-row");
+        assert_eq!(catalog.get_chunk_decompressed_size(&hash).unwrap(), None);
     }
 }

@@ -35,7 +35,7 @@ rk is written in Rust. You need:
 
 ```bash
 git clone https://github.com/gustaveiffel/rktvs.git
-cd rktvs
+cd rk
 cargo build --release
 ```
 
@@ -49,7 +49,7 @@ cp target/release/rk ~/.local/bin/    # or /usr/local/bin/
 
 ```bash
 rk --help
-cargo test --workspace    # 91 tests, should all pass
+cargo test --workspace    # 117 tests, should all pass
 ```
 
 ---

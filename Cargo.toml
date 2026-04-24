@@ -35,6 +35,18 @@ dirs-next = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
+[dev-dependencies]
+tempfile = "3.25"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+rk-core = { path = "crates/rk-core" }
+rk-transport = { path = "crates/rk-transport", features = ["test-support"] }
+zstd = "0.13"
+blake3 = "1.8"
+
+[[test]]
+name = "netem_fetch"
+path = "tests/chaos/netem_fetch.rs"
+
 [workspace]
 resolver = "2"
 members = ["crates/rk-core", "crates/rk-tar", "crates/rk-transport", "crates/rk-scheduler"]

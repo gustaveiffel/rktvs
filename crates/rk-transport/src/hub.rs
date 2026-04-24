@@ -17,7 +17,7 @@ use crate::proto;
 
 /// Current wire protocol version.
 /// Bump when ChunkResponse or stream semantics change in incompatible ways.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Minimum protocol version this hub accepts from satellites.
 const MIN_PROTOCOL_VERSION: u32 = 2;
@@ -123,10 +123,19 @@ async fn handle_stream(
     match tag {
         StreamTag::Control => handle_control(&mut send, &mut recv).await?,
         StreamTag::ChunkRequest => {
-            handle_chunk_request(&mut send, &mut recv, store, manifest).await?;
+            handle_chunk_request(&mut send, &mut recv, store, manifest, catalog).await?;
         }
         StreamTag::CatalogSync => {
             handle_catalog_sync(&mut send, &mut recv, catalog).await?;
+        }
+        StreamTag::HaveCheck => {
+            handle_have_check(&mut send, &mut recv, store).await?;
+        }
+        StreamTag::ChunkPush => {
+            handle_chunk_push(&mut send, &mut recv, store).await?;
+        }
+        StreamTag::ManifestPush => {
+            handle_manifest_push(&mut send, &mut recv, catalog).await?;
         }
     }
 
@@ -169,6 +178,7 @@ async fn handle_chunk_request(
     recv: &mut RecvStream,
     store: Arc<ChunkStore>,
     manifest: Option<Arc<Manifest>>,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
 ) -> anyhow::Result<()> {
     let data = recv.read_to_end(4096).await?;
     let req = proto::ChunkRequest::decode_length_delimited(data.as_slice())?;
@@ -186,8 +196,13 @@ async fn handle_chunk_request(
         if store.has(&hash)
             && let Ok(compressed) = store.get_compressed(&hash)
         {
-            let decompressed_size = zstd::decode_all(compressed.as_slice())
-                .map(|d| d.len() as u64)
+            // Look up decompressed size from catalog instead of decompressing
+            let decompressed_size = catalog
+                .as_ref()
+                .and_then(|cat| {
+                    let cat = cat.lock().expect("catalog lock poisoned");
+                    cat.get_chunk_decompressed_size(&hash).ok().flatten()
+                })
                 .unwrap_or(0);
             return proto::ChunkResponse {
                 found: true,
@@ -197,14 +212,26 @@ async fn handle_chunk_request(
             };
         }
         // Fallback: try manifest/resolver path (returns decompressed data)
+        // Compress before sending to save bandwidth on hostile links
         let resolver = ChunkResolver::new(manifest.as_deref(), &store);
         match resolver.get(&hash) {
-            Ok(chunk_data) => proto::ChunkResponse {
-                found: true,
-                size: chunk_data.len() as u64,
-                data: chunk_data,
-                compressed: false,
-            },
+            Ok(chunk_data) => {
+                let size = chunk_data.len() as u64;
+                match zstd::encode_all(chunk_data.as_slice(), 3) {
+                    Ok(compressed) => proto::ChunkResponse {
+                        found: true,
+                        size,
+                        data: compressed,
+                        compressed: true,
+                    },
+                    Err(_) => proto::ChunkResponse {
+                        found: true,
+                        size,
+                        data: chunk_data,
+                        compressed: false,
+                    },
+                }
+            }
             Err(_) => proto::ChunkResponse {
                 found: false,
                 size: 0,
@@ -214,6 +241,111 @@ async fn handle_chunk_request(
         }
     })
     .await?;
+
+    let encoded = frame::encode_msg(&resp);
+    send.write_all(&encoded).await?;
+    send.finish()?;
+    Ok(())
+}
+
+async fn handle_have_check(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    store: Arc<ChunkStore>,
+) -> anyhow::Result<()> {
+    // Max: 10_000 hashes * 32 bytes + overhead
+    let data = recv.read_to_end(512 * 1024).await?;
+    let req = proto::HaveCheckRequest::decode_length_delimited(data.as_slice())?;
+
+    const MAX_HAVE_CHECK_HASHES: usize = 10_000;
+    if req.chunk_hashes.len() > MAX_HAVE_CHECK_HASHES {
+        anyhow::bail!(
+            "have_check: too many hashes ({}, max {})",
+            req.chunk_hashes.len(),
+            MAX_HAVE_CHECK_HASHES
+        );
+    }
+
+    let have = tokio::task::spawn_blocking(move || {
+        req.chunk_hashes
+            .iter()
+            .map(|h| {
+                if h.len() != 32 {
+                    return false;
+                }
+                let hash_bytes: [u8; 32] = h.as_slice().try_into().unwrap();
+                let hash = blake3::Hash::from_bytes(hash_bytes);
+                store.has(&hash)
+            })
+            .collect::<Vec<bool>>()
+    })
+    .await?;
+
+    let resp = proto::HaveCheckResponse { have };
+    let encoded = frame::encode_msg(&resp);
+    send.write_all(&encoded).await?;
+    send.finish()?;
+    Ok(())
+}
+
+async fn handle_chunk_push(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    store: Arc<ChunkStore>,
+) -> anyhow::Result<()> {
+    // Max: 16 MB compressed + protobuf overhead
+    let data = recv.read_to_end(17 * 1024 * 1024).await?;
+    let req = proto::ChunkPushRequest::decode_length_delimited(data.as_slice())?;
+
+    let hash_bytes: [u8; 32] = req
+        .hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid hash length: {}", req.hash.len()))?;
+    let expected_hash = blake3::Hash::from_bytes(hash_bytes);
+
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Verify: decompress, hash, compare
+        let decompressed = zstd::decode_all(req.compressed_data.as_slice())
+            .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?;
+
+        if decompressed.len() as u64 != req.decompressed_size {
+            anyhow::bail!(
+                "size mismatch: declared {} but got {}",
+                req.decompressed_size,
+                decompressed.len()
+            );
+        }
+
+        let actual_hash = blake3::hash(&decompressed);
+        if actual_hash != expected_hash {
+            anyhow::bail!("hash mismatch: expected {expected_hash}, got {actual_hash}");
+        }
+
+        // Hash verified above — write compressed bytes directly to avoid a
+        // second decompress+hash round-trip inside put_compressed.
+        let path = store.chunk_path(&expected_hash);
+        if !path.exists() {
+            let parent = path.parent().unwrap();
+            std::fs::create_dir_all(parent)?;
+            let tmp = parent.join(format!("{}.zst.tmp", expected_hash.to_hex()));
+            std::fs::write(&tmp, &req.compressed_data)?;
+            std::fs::rename(&tmp, &path)?;
+        }
+        Ok(())
+    })
+    .await?;
+
+    let resp = match result {
+        Ok(()) => proto::ChunkPushResponse {
+            ok: true,
+            message: String::new(),
+        },
+        Err(e) => proto::ChunkPushResponse {
+            ok: false,
+            message: e.to_string(),
+        },
+    };
 
     let encoded = frame::encode_msg(&resp);
     send.write_all(&encoded).await?;
@@ -306,6 +438,97 @@ async fn handle_catalog_sync(
         }
     })
     .await?;
+
+    let encoded = frame::encode_msg(&resp);
+    send.write_all(&encoded).await?;
+    send.finish()?;
+    Ok(())
+}
+
+async fn handle_manifest_push(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    catalog: Option<Arc<std::sync::Mutex<Catalog>>>,
+) -> anyhow::Result<()> {
+    let data = recv.read_to_end(4 * 1024 * 1024).await?;
+    let req = proto::ManifestPushRequest::decode_length_delimited(data.as_slice())?;
+
+    let catalog = match catalog {
+        Some(cat) => cat,
+        None => {
+            let resp = proto::ManifestPushResponse {
+                ok: false,
+                message: "hub has no catalog configured".into(),
+            };
+            let encoded = frame::encode_msg(&resp);
+            send.write_all(&encoded).await?;
+            send.finish()?;
+            return Ok(());
+        }
+    };
+
+    // Sanitize filename
+    if req.filename.is_empty()
+        || req.filename.contains('\0')
+        || req.filename.contains("..")
+        || req.filename.len() > 4096
+    {
+        let resp = proto::ManifestPushResponse {
+            ok: false,
+            message: "invalid filename".into(),
+        };
+        let encoded = frame::encode_msg(&resp);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+        return Ok(());
+    }
+
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let cat = catalog.lock().expect("catalog lock poisoned");
+
+        let chunks: Vec<rk_core::chunker::ChunkMeta> = req
+            .chunks
+            .iter()
+            .map(|c| {
+                let hash_bytes: [u8; 32] = c
+                    .hash
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("invalid chunk hash length"))?;
+                Ok(rk_core::chunker::ChunkMeta {
+                    hash: blake3::Hash::from_bytes(hash_bytes),
+                    offset: c.offset,
+                    size: c.size as usize,
+                    compressed_size: 0,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        cat.record_file(
+            "local",       // library_id
+            "uploads",     // tape
+            &req.filename, // path
+            0,             // entry_type: regular file
+            req.file_size, // size
+            None,          // mtime
+            None,          // mode
+            1,             // version
+            &chunks,
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let resp = match result {
+        Ok(()) => proto::ManifestPushResponse {
+            ok: true,
+            message: String::new(),
+        },
+        Err(e) => proto::ManifestPushResponse {
+            ok: false,
+            message: e.to_string(),
+        },
+    };
 
     let encoded = frame::encode_msg(&resp);
     send.write_all(&encoded).await?;

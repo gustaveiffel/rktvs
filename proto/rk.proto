@@ -55,3 +55,40 @@ message CatalogSyncResponse {
   repeated TapeInfo tapes = 3;
   repeated FileMetadata files = 4;
 }
+
+// ── Push protocol (v5) ──────────────────────────────
+
+// Client → Hub: "which of these chunks do you already have?"
+message HaveCheckRequest {
+  repeated bytes chunk_hashes = 1;  // 32-byte BLAKE3 hashes
+}
+
+// Hub → Client: one bool per hash, same order
+message HaveCheckResponse {
+  repeated bool have = 1;
+}
+
+// Client → Hub: push a single compressed chunk
+message ChunkPushRequest {
+  bytes hash = 1;               // 32-byte BLAKE3 hash
+  bytes compressed_data = 2;    // zstd-compressed chunk bytes
+  uint64 decompressed_size = 3;
+}
+
+// Hub → Client: acknowledge storage
+message ChunkPushResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+// Client → Hub: register a file after all its chunks are pushed
+message ManifestPushRequest {
+  string filename = 1;
+  uint64 file_size = 2;
+  repeated ChunkInfo chunks = 3;  // reuse existing ChunkInfo
+}
+
+message ManifestPushResponse {
+  bool ok = 1;
+  string message = 2;
+}

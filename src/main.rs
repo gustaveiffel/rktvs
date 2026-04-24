@@ -97,6 +97,20 @@ enum Commands {
         #[arg(long, default_value = "normal")]
         grade: String,
     },
+    /// Tape management commands
+    Tape {
+        #[command(subcommand)]
+        command: TapeCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum TapeCommands {
+    /// Train a zstd dictionary from tape chunks for better compression
+    TrainDict {
+        /// Tape name to train dictionary for
+        tape: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -194,6 +208,24 @@ fn validate_library_id(id: &str) -> Result<()> {
         bail!(
             "invalid library ID '{id}': only alphanumeric characters, hyphens, \
              and underscores are allowed"
+        );
+    }
+    Ok(())
+}
+
+/// Validate a tape name: alphanumeric, hyphens, underscores, dots only.
+/// Prevents path traversal when the tape name is used in filesystem paths (e.g. dictionaries).
+fn validate_tape_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("tape name cannot be empty");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        bail!(
+            "invalid tape name '{name}': only alphanumeric characters, hyphens, \
+             underscores, and dots are allowed"
         );
     }
     Ok(())
@@ -429,6 +461,14 @@ async fn main() -> Result<()> {
             eprintln!("  Missing chunks: {}", est.missing_chunks);
             eprintln!("  Total size:     {} bytes", est.total_bytes);
             eprintln!("  Transfer est:   {} bytes", est.transfer_bytes);
+            eprintln!(
+                "  Wire transfer:  ~{} bytes (compressed)",
+                est.compressed_transfer_bytes
+            );
+            if est.compressed_transfer_bytes < est.transfer_bytes && est.transfer_bytes > 0 {
+                let savings = 100 - (est.compressed_transfer_bytes * 100 / est.transfer_bytes);
+                eprintln!("  Compression:    ~{}% savings", savings);
+            }
         }
         Commands::Jobs { status } => {
             let jobs = catalog.list_jobs(status.as_deref())?;
@@ -775,6 +815,26 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
+        // ── Tape commands ──────────────────────────────────
+        Commands::Tape { command } => match command {
+            TapeCommands::TrainDict { tape } => {
+                validate_tape_name(&tape)?;
+                let dict_dir = data_dir.join("dicts");
+                let hashes = catalog.sample_chunk_hashes("local", &tape, 100)?;
+                if hashes.is_empty() {
+                    eprintln!("no chunks found for tape '{tape}' — ingest files first");
+                    return Ok(());
+                }
+                eprintln!("training dictionary from {} samples...", hashes.len());
+                let dict_size = rk_core::dict::train_dict(&store, &hashes, &dict_dir, &tape)?;
+                eprintln!(
+                    "dictionary saved: {} ({} bytes)",
+                    dict_dir.join(format!("{tape}.zdict")).display(),
+                    dict_size
+                );
+            }
+        },
 
         // ── Fetch command ───────────────────────────────────
         Commands::Fetch { path, grade } => {
