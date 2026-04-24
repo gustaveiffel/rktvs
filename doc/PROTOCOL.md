@@ -77,7 +77,7 @@ message HandshakeAck {
 }
 ```
 
-Current `protocol_version`: **3** (v2: compressed wire transfer, v3: catalog sync).
+Current `protocol_version`: **5** (v2: compressed wire transfer, v3: catalog sync, v4: catalog size lookup, v5: push protocol).
 
 **Version negotiation:** the satellite sends its version in `Handshake`. The
 hub checks it against its minimum supported version and rejects with
@@ -185,7 +185,109 @@ lists. For very large tapes, pagination will be added in a future version.
 - Hub protocol version < 3: the satellite checks `hub_protocol_version` and
   fails before opening the stream.
 
-## 8. Flow example
+## 8. Push protocol (tags 0x03, 0x04, 0x05)
+
+Introduced in protocol version 5. Allows a client to upload chunks and
+register files on the hub.
+
+### 8a. HAVE_CHECK stream (tag 0x03)
+
+Batch query: the client asks which chunks the hub already has.
+
+```
+Client -> Hub:  [0x03] [len-delimited HaveCheckRequest]
+Hub -> Client:  [len-delimited HaveCheckResponse]
+```
+
+```protobuf
+message HaveCheckRequest {
+  repeated bytes chunk_hashes = 1;  // 32-byte BLAKE3 hashes
+}
+
+message HaveCheckResponse {
+  repeated bool have = 1;  // same order as request
+}
+```
+
+**Limits:** max 10,000 hashes per request, max 512 KB request size.
+
+### 8b. CHUNK_PUSH stream (tag 0x04)
+
+Push a single zstd-compressed chunk. The hub verifies the hash before storing.
+
+```
+Client -> Hub:  [0x04] [len-delimited ChunkPushRequest]
+Hub -> Client:  [len-delimited ChunkPushResponse]
+```
+
+```protobuf
+message ChunkPushRequest {
+  bytes hash = 1;               // 32-byte BLAKE3 hash
+  bytes compressed_data = 2;    // zstd-compressed chunk bytes
+  uint64 decompressed_size = 3;
+}
+
+message ChunkPushResponse {
+  bool ok = 1;
+  string message = 2;
+}
+```
+
+**Validation:** the hub decompresses the data, checks the decompressed size
+matches, and verifies the BLAKE3 hash. On mismatch, `ok = false` with a
+descriptive message. Max request size: 17 MB.
+
+Pushing a chunk that already exists is idempotent (returns `ok = true`).
+
+### 8c. MANIFEST_PUSH stream (tag 0x05)
+
+Register a file in the hub's catalog after all its chunks have been pushed.
+
+```
+Client -> Hub:  [0x05] [len-delimited ManifestPushRequest]
+Hub -> Client:  [len-delimited ManifestPushResponse]
+```
+
+```protobuf
+message ManifestPushRequest {
+  string filename = 1;
+  uint64 file_size = 2;
+  repeated ChunkInfo chunks = 3;  // reuses existing ChunkInfo
+}
+
+message ManifestPushResponse {
+  bool ok = 1;
+  string message = 2;
+}
+```
+
+**Filename validation:** rejected if empty, contains NUL bytes, contains `..`
+(path traversal), or exceeds 4096 bytes.
+
+Files are recorded under `library_id = "local"`, `tape = "uploads"`.
+
+### 8d. Push flow example
+
+```
+[Client]                              [Hub]
+    |                                   |
+    |--- stream 0: [0x00] Handshake --->|
+    |<-- HandshakeAck {ok: true} -------|
+    |                                   |
+    |--- stream 1: [0x03] HaveCheck --->|  (batch of hashes)
+    |<-- HaveCheckResponse {have} ------|
+    |                                   |
+    |--- stream 2: [0x04] ChunkPush -->|  (chunk not on hub)
+    |<-- ChunkPushResponse {ok} --------|
+    |                                   |
+    |--- stream 3: [0x04] ChunkPush -->|  (parallel)
+    |<-- ChunkPushResponse {ok} --------|
+    |                                   |
+    |--- stream 4: [0x05] Manifest ---->|
+    |<-- ManifestPushResponse {ok} -----|
+```
+
+## 9. Fetch flow example
 
 ```
 [Satellite]                           [Hub]
@@ -213,7 +315,7 @@ lists. For very large tapes, pagination will be added in a future version.
 
 Multiple streams can be opened concurrently (QUIC multiplexing).
 
-## 9. Error handling
+## 10. Error handling
 
 - **Unknown stream tag:** the hub closes the stream with an error.
 - **Chunk not found:** the hub responds with `ChunkResponse { found: false }`.
@@ -222,7 +324,7 @@ Multiple streams can be opened concurrently (QUIC multiplexing).
 - **Connection drop:** the satellite can reconnect and resume, skipping
   already-fetched chunks (chunk-level resume).
 
-## 10. Security
+## 11. Security
 
 **Current:**
 - TLS 1.3 via rustls with self-signed certificates (rcgen).

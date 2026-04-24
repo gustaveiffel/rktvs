@@ -9,6 +9,9 @@ pub enum StreamTag {
     Control = 0x00,
     ChunkRequest = 0x01,
     CatalogSync = 0x02,
+    HaveCheck = 0x03,
+    ChunkPush = 0x04,
+    ManifestPush = 0x05,
 }
 
 impl TryFrom<u8> for StreamTag {
@@ -19,6 +22,9 @@ impl TryFrom<u8> for StreamTag {
             0x00 => Ok(Self::Control),
             0x01 => Ok(Self::ChunkRequest),
             0x02 => Ok(Self::CatalogSync),
+            0x03 => Ok(Self::HaveCheck),
+            0x04 => Ok(Self::ChunkPush),
+            0x05 => Ok(Self::ManifestPush),
             other => Err(other),
         }
     }
@@ -49,6 +55,16 @@ mod tests {
         let decoded: proto::Handshake = decode_msg(&encoded).unwrap();
         assert_eq!(decoded.satellite_id, "sat-1");
         assert_eq!(decoded.protocol_version, 1);
+    }
+
+    #[test]
+    fn push_stream_tags_roundtrip() {
+        assert_eq!(StreamTag::HaveCheck as u8, 0x03);
+        assert_eq!(StreamTag::ChunkPush as u8, 0x04);
+        assert_eq!(StreamTag::ManifestPush as u8, 0x05);
+        assert_eq!(StreamTag::try_from(0x03).unwrap(), StreamTag::HaveCheck);
+        assert_eq!(StreamTag::try_from(0x04).unwrap(), StreamTag::ChunkPush);
+        assert_eq!(StreamTag::try_from(0x05).unwrap(), StreamTag::ManifestPush);
     }
 
     #[test]
