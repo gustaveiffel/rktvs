@@ -375,7 +375,7 @@ catalog queries run on `spawn_blocking` to avoid stalling the async runtime.
 Chunks from the store are served compressed (`compressed = true`); chunks from
 the manifest are served decompressed (`compressed = false`).
 
-**Protocol version:** `hub::PROTOCOL_VERSION` (currently 3). The hub rejects
+**Protocol version:** `hub::PROTOCOL_VERSION` (currently 5). The hub rejects
 satellites with protocol version < 2 at handshake time. CatalogSync requires
 version 3.
 
@@ -428,7 +428,20 @@ let (_, files) = satellite.sync_catalog("docs").await?;
 The satellite checks `hub_protocol_version >= 3` before opening a CatalogSync
 stream. Returns an error if the hub is too old.
 
-**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 3). The
+**Push methods (v5):**
+
+```rust
+// Ask hub which chunks it already has
+let have: Vec<bool> = satellite.have_check(&[hash1, hash2]).await?;
+
+// Push a compressed chunk (hub verifies hash before storing)
+satellite.push_chunk(&hash, &compressed_data, decompressed_size).await?;
+
+// Register a file after all chunks are pushed
+satellite.push_manifest("file.mp4", file_size, &[(hash, offset, size)]).await?;
+```
+
+**Protocol version:** `satellite::PROTOCOL_VERSION` (currently 5). The
 satellite rejects hubs with an older protocol version at handshake time.
 The `server_name` must match a SAN in the hub's certificate (use `--san`
 at `hub init` time). The satellite stores `hub_protocol_version` from the

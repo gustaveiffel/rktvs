@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Integration test: tar → ingest → export → verify contents match.
 
 use std::io::Cursor;

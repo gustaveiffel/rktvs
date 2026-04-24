@@ -10,7 +10,7 @@ use crate::frame::{self, StreamTag};
 use crate::proto;
 
 /// Protocol version this satellite speaks.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Minimum hub protocol version this satellite accepts.
 const MIN_HUB_VERSION: u32 = 2;
@@ -143,6 +143,93 @@ impl Satellite {
             Ok(None)
         }
     }
+    /// Push a single compressed chunk to the hub.
+    /// Returns true if the hub accepted the chunk.
+    pub async fn push_chunk(
+        &self,
+        hash: &blake3::Hash,
+        compressed_data: &[u8],
+        decompressed_size: u64,
+    ) -> anyhow::Result<bool> {
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+
+        send.write_all(&[StreamTag::ChunkPush as u8]).await?;
+
+        let req = proto::ChunkPushRequest {
+            hash: hash.as_bytes().to_vec(),
+            compressed_data: compressed_data.to_vec(),
+            decompressed_size,
+        };
+        let encoded = frame::encode_msg(&req);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+
+        let resp_data = recv.read_to_end(4096).await?;
+        let resp = proto::ChunkPushResponse::decode_length_delimited(resp_data.as_slice())?;
+
+        if !resp.ok {
+            anyhow::bail!("chunk push rejected: {}", resp.message);
+        }
+        Ok(true)
+    }
+
+    /// Push a file manifest to the hub after all chunks have been pushed.
+    /// `chunks` is a list of (hash, offset, size) tuples.
+    pub async fn push_manifest(
+        &self,
+        filename: &str,
+        file_size: u64,
+        chunks: &[(blake3::Hash, u64, u64)],
+    ) -> anyhow::Result<bool> {
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+
+        send.write_all(&[StreamTag::ManifestPush as u8]).await?;
+
+        let req = proto::ManifestPushRequest {
+            filename: filename.into(),
+            file_size,
+            chunks: chunks
+                .iter()
+                .map(|(hash, offset, size)| proto::ChunkInfo {
+                    hash: hash.as_bytes().to_vec(),
+                    offset: *offset,
+                    size: *size,
+                })
+                .collect(),
+        };
+        let encoded = frame::encode_msg(&req);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+
+        let resp_data = recv.read_to_end(4096).await?;
+        let resp = proto::ManifestPushResponse::decode_length_delimited(resp_data.as_slice())?;
+
+        if !resp.ok {
+            anyhow::bail!("manifest push rejected: {}", resp.message);
+        }
+        Ok(true)
+    }
+
+    /// Ask the hub which chunks it already has.
+    /// Returns a Vec<bool> in the same order as the input hashes.
+    pub async fn have_check(&self, hashes: &[blake3::Hash]) -> anyhow::Result<Vec<bool>> {
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+
+        send.write_all(&[StreamTag::HaveCheck as u8]).await?;
+
+        let req = proto::HaveCheckRequest {
+            chunk_hashes: hashes.iter().map(|h| h.as_bytes().to_vec()).collect(),
+        };
+        let encoded = frame::encode_msg(&req);
+        send.write_all(&encoded).await?;
+        send.finish()?;
+
+        let resp_data = recv.read_to_end(hashes.len() + 1024).await?;
+        let resp = proto::HaveCheckResponse::decode_length_delimited(resp_data.as_slice())?;
+
+        Ok(resp.have)
+    }
+
     /// Sync catalog metadata from the hub.
     ///
     /// If `tape` is empty, lists available tapes and returns `(tapes, [])`.

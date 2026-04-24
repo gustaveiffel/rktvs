@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use prost::Message;
 use quinn::Endpoint;
 use rk_core::catalog::Catalog;
@@ -221,6 +223,132 @@ async fn catalog_sync_over_localhost() {
 
     let guide = files.iter().find(|f| f.path == "/guide.md").unwrap();
     assert!(guide.chunks.is_empty());
+}
+
+/// Hub with catalog returns correct decompressed size via catalog lookup (not decompress).
+/// Hub without catalog falls back to size=0. Both paths must not crash.
+/// Uses raw protocol to inspect the ChunkResponse.size field directly.
+#[tokio::test]
+async fn chunk_response_size_with_and_without_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ChunkStore::new(dir.path().to_path_buf()));
+
+    let data = b"backward compat test data for chunk response size field";
+    let hash = store.put(data).unwrap();
+
+    // ── Hub WITH catalog ──
+    let catalog = Catalog::open(dir.path().join("catalog.db").as_path()).unwrap();
+    let chunks = vec![rk_core::chunker::ChunkMeta {
+        hash,
+        offset: 0,
+        size: data.len(),
+        compressed_size: 30,
+    }];
+    catalog
+        .record_file(
+            "local",
+            "t",
+            "/f.bin",
+            1,
+            data.len() as u64,
+            None,
+            None,
+            1,
+            &chunks,
+        )
+        .unwrap();
+    let hub_catalog = Arc::new(std::sync::Mutex::new(catalog));
+
+    let (cert, key) = cert::generate_self_signed().unwrap();
+    let server_config = cert::server_config(cert.clone(), key).unwrap();
+    let client_config = cert::client_config(&cert).unwrap();
+
+    let hub = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config,
+        store.clone(),
+        None,
+        Some(hub_catalog),
+    )
+    .await
+    .unwrap();
+    let hub_addr = hub.local_addr();
+    tokio::spawn(async move { hub.run().await });
+
+    // Raw protocol: send ChunkRequest, inspect ChunkResponse.size
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+    endpoint.set_default_client_config(client_config);
+    let conn = endpoint
+        .connect(hub_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(&[0x01]).await.unwrap(); // StreamTag::ChunkRequest
+    let req = rk_transport::proto::ChunkRequest {
+        hash: hash.as_bytes().to_vec(),
+    };
+    let mut buf = Vec::new();
+    req.encode_length_delimited(&mut buf).unwrap();
+    send.write_all(&buf).await.unwrap();
+    send.finish().unwrap();
+    let resp_data = recv.read_to_end(1 << 20).await.unwrap();
+    let resp =
+        rk_transport::proto::ChunkResponse::decode_length_delimited(resp_data.as_slice()).unwrap();
+
+    assert!(resp.found);
+    assert!(resp.compressed);
+    assert_eq!(
+        resp.size,
+        data.len() as u64,
+        "with catalog: size should be decompressed size from catalog"
+    );
+    let decompressed = zstd::decode_all(resp.data.as_slice()).unwrap();
+    assert_eq!(decompressed, data);
+    conn.close(0u32.into(), b"done");
+
+    // ── Hub WITHOUT catalog ──
+    let (cert2, key2) = cert::generate_self_signed().unwrap();
+    let server_config2 = cert::server_config(cert2.clone(), key2).unwrap();
+    let client_config2 = cert::client_config(&cert2).unwrap();
+
+    let hub2 = Hub::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        server_config2,
+        store,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let hub2_addr = hub2.local_addr();
+    tokio::spawn(async move { hub2.run().await });
+
+    let mut endpoint2 = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+    endpoint2.set_default_client_config(client_config2);
+    let conn2 = endpoint2
+        .connect(hub2_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    let (mut send2, mut recv2) = conn2.open_bi().await.unwrap();
+    send2.write_all(&[0x01]).await.unwrap();
+    let mut buf2 = Vec::new();
+    req.encode_length_delimited(&mut buf2).unwrap();
+    send2.write_all(&buf2).await.unwrap();
+    send2.finish().unwrap();
+    let resp_data2 = recv2.read_to_end(1 << 20).await.unwrap();
+    let resp2 =
+        rk_transport::proto::ChunkResponse::decode_length_delimited(resp_data2.as_slice()).unwrap();
+
+    assert!(resp2.found);
+    assert!(resp2.compressed);
+    assert_eq!(
+        resp2.size, 0,
+        "without catalog: size falls back to 0 (backward compat)"
+    );
+    let decompressed2 = zstd::decode_all(resp2.data.as_slice()).unwrap();
+    assert_eq!(decompressed2, data);
 }
 
 /// Hub without catalog configured returns a clear error.
